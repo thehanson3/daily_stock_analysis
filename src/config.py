@@ -812,6 +812,7 @@ class Config:
 
     # 仅分析结果摘要：true 时只推送汇总，不含个股详情（Issue #262）
     report_summary_only: bool = False
+    report_show_llm_model: bool = True
 
     # Report Engine P0: Jinja2 renderer and integrity checks
     report_templates_dir: str = "templates"  # Template directory (relative to project root)
@@ -1377,7 +1378,11 @@ class Config:
         report_language_raw = cls._resolve_report_language_env_value(
             preexisting_report_language
         )
-        
+        report_show_llm_model_raw = os.getenv('REPORT_SHOW_LLM_MODEL')
+        report_show_llm_model = parse_env_bool(report_show_llm_model_raw, default=True)
+        if report_show_llm_model_raw is not None and not report_show_llm_model_raw.strip():
+            report_show_llm_model = False
+
         return cls(
             stock_list=stock_list,
             feishu_app_id=os.getenv('FEISHU_APP_ID'),
@@ -1562,6 +1567,7 @@ class Config:
             report_type=cls._parse_report_type(os.getenv('REPORT_TYPE', 'simple')),
             report_language=cls._parse_report_language(report_language_raw),
             report_summary_only=os.getenv('REPORT_SUMMARY_ONLY', 'false').lower() == 'true',
+            report_show_llm_model=report_show_llm_model,
             report_templates_dir=os.getenv('REPORT_TEMPLATES_DIR', 'templates'),
             report_renderer_enabled=os.getenv('REPORT_RENDERER_ENABLED', 'false').lower() == 'true',
             report_integrity_enabled=os.getenv('REPORT_INTEGRITY_ENABLED', 'true').lower() == 'true',

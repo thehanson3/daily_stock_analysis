@@ -955,6 +955,20 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 53,
     },
+    "REPORT_SHOW_LLM_MODEL": {
+        "title": "Show LLM Model in Reports",
+        "description": "Show the LLM model name in notification report footers. Disable to hide runtime model metadata. This option only affects report rendering and does not change runtime provider/model/Base URL/LiteLLM routing, migration, persistence, or cleanup behavior.",
+        "category": "notification",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 54,
+    },
     # ------------------------------------------------------------------
     # Notification – Feishu
     # ------------------------------------------------------------------
