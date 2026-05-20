@@ -22,7 +22,11 @@ import litellm
 from json_repair import repair_json
 from litellm import Router
 
-from src.agent.llm_adapter import get_thinking_extra_body
+from src.agent.llm_adapter import (
+    get_thinking_extra_body,
+    resolve_fallback_litellm_wire_models,
+    register_fallback_model_pricing,
+)
 from src.agent.skills.defaults import CORE_TRADING_SKILL_POLICY_ZH
 from src.config import (
     Config,
@@ -30,6 +34,8 @@ from src.config import (
     get_api_keys_for_model,
     get_config,
     get_configured_llm_models,
+    normalize_litellm_temperature,
+    resolve_litellm_wire_model,
     resolve_news_window_days,
 )
 from src.llm.generation_params import apply_litellm_generation_params
@@ -2047,6 +2053,8 @@ class GeminiAnalyzer:
         router_model_names: set[str],
     ) -> Any:
         """Dispatch a LiteLLM completion through router or direct fallback."""
+        wire_models = resolve_fallback_litellm_wire_models(model, config.llm_model_list)
+        register_fallback_model_pricing(wire_models)
         effective_kwargs = dict(call_kwargs)
         if use_channel_router and self._router and model in router_model_names:
             return self._router.completion(**effective_kwargs)
