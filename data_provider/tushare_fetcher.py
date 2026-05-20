@@ -1153,8 +1153,9 @@ class TushareFetcher(BaseFetcher):
             df = self._call_api_with_rate_limit(
                 "cyq_perf",
                 ts_code=ts_code,
-                trade_date=trade_date,
-            )
+                start_date=last_date,
+                end_date=last_date,
+                )
 
             if df is None or df.empty:
                 return None
