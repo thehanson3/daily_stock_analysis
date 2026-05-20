@@ -324,6 +324,23 @@ daily_stock_analysis/
 
 > 行为说明：搜索服务与社交舆情服务为可选增强链路。任一服务初始化失败时，系统会记录 warning 并降级为跳过该服务，仅影响对应环节，不会阻塞技术面主链路和主任务流。
 
+### 新闻检索可解释排序（Issue #1356）
+
+`search_stock_news` 对每条候选新闻会计算「可解释相关度」并落地为 3 类标签：
+
+- `direct_company_news`：命中目标代码、公司名（含官方/交易所来源加权）；
+- `sector_related_news`：命中行业板块语义；
+- `macro_market_news`：未命中目标主体时的宏观/市场语境新闻。
+
+排序策略为：先按类别优先级（direct > sector > macro）排序，再按语言偏好（中文优先）再按分数排序，因此当同一时窗内存在明确标的命中的新闻时会优先展示。
+
+调试入口：
+
+- 每条返回会保留 `relevance_score` / `relevance_category` / `relevance_reasons` 元数据，最终 `to_text()` 与情报上下文会附带对应「关联度」说明；
+- 搜索链路日志会输出 `[新闻相关度]` 统计，便于复盘为何该批次触发了 direct/sector/macro 分层。
+
+兼容与回退说明：该改动不新增/修改模型、provider、Base URL、LiteLLM route、配置清理或回写逻辑；若出现异常，只能通过回滚本次提交恢复旧排序行为，不涉及历史配置迁移。
+
 ### 数据源配置
 
 | 变量名 | 说明 | 默认值 | 必填 |
