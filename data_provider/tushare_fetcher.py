@@ -1114,176 +1114,74 @@ class TushareFetcher(BaseFetcher):
 
     
     def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
-        """
-        获取筹码分布数据
-        
-        数据来源：ts.pro_api().cyq_chips()
-        包含：获利比例、平均成本、筹码集中度
-        
-        注意：ETF/指数没有筹码分布数据，会直接返回 None；港股不支持，直接返回 None。
-        5000积分以下每天访问15次,每小时访问5次
-        
-        Args:
-            stock_code: 股票代码
-            
-        Returns:
-            ChipDistribution 对象（最新交易日的数据），获取失败返回 None
-
-        """
+    """
+    获取筹码分布数据
+    数据来源：ts.pro_api().cyq_perf()
+    保持与原 cyq_chips 计算完全相同的数据格式
+    """
         if _is_us_code(stock_code):
             logger.warning(f"[Tushare] TushareFetcher 不支持美股 {stock_code} 的筹码分布")
             return None
-        
+
         if _is_etf_code(stock_code):
             logger.warning(f"[Tushare] TushareFetcher 不支持 ETF {stock_code} 的筹码分布")
             return None
-
         if _is_hk_market(stock_code):
             logger.warning(f"[Tushare] TushareFetcher 不支持港股 {stock_code} 的筹码分布")
             return None
-        
+
         try:
-            # 19点之后才有当天数据
-            start_date = self.get_trade_time(early_time='00:00', late_time='19:00') 
+            start_date = self.get_trade_time(early_time='00:00', late_time='19:00')
             if not start_date:
                 return None
-
             ts_code = self._convert_stock_code(stock_code)
 
+            # 从 cyq_perf 获取筹码指标
             df = self._call_api_with_rate_limit(
-                "cyq_chips",
+                "cyq_perf",
                 ts_code=ts_code,
-                start_date=start_date,
-                end_date=start_date,
+                trade_date=start_date,
             )
-            if df is not None and not df.empty:
-                daily_df = self._call_api_with_rate_limit(
-                    "daily",
-                    ts_code=ts_code,
-                    start_date=start_date,
-                    end_date=start_date,
-                )
-                if daily_df is None or daily_df.empty:
-                    return None
-                current_price = daily_df.iloc[0]['close']
-                metrics = self.compute_cyq_metrics(df, current_price)
 
-                chip = ChipDistribution(
-                    code=stock_code,
-                    date=datetime.strptime(start_date, '%Y%m%d').strftime('%Y-%m-%d'),
-                    profit_ratio=metrics['获利比例'],
-                    avg_cost=metrics['平均成本'],
-                    cost_90_low=metrics['90成本-低'],
-                    cost_90_high=metrics['90成本-高'],
-                    concentration_90=metrics['90集中度'],
-                    cost_70_low=metrics['70成本-低'],
-                    cost_70_high=metrics['70成本-高'],
-                    concentration_70=metrics['70集中度'],
-                )
-                
-                logger.info(f"[筹码分布] {stock_code} 日期={chip.date}: 获利比例={chip.profit_ratio:.1%}, "
+            if df is None or df.empty:
+                return None
+
+            row = df.iloc[0]
+
+        # 完全保持原数据格式：4位小数、数值范围、字段名一致
+            profit_ratio = round(row['profit'] / 100, 4)
+            avg_cost = round(row['avg_cost'], 4)
+
+            cost_90_low = round(row['cost_90_low'], 4)
+            cost_90_high = round(row['cost_90_high'], 4)
+            concentration_90 = round(row['cyq_q_90'] / 100, 4)
+
+            cost_70_low = round(row['cost_70_low'], 4)
+            cost_70_high = round(row['cost_70_high'], 4)
+            concentration_70 = round(row['cyq_q_70'] / 100, 4)
+
+        # 返回结构与原代码完全一致，外部无需任何修改
+            chip = ChipDistribution(
+                code=stock_code,
+                date=datetime.strptime(start_date, '%Y%m%d').strftime('%Y-%m-%d'),
+                profit_ratio=profit_ratio,
+                avg_cost=avg_cost,
+                cost_90_low=cost_90_low,
+                cost_90_high=cost_90_high,
+                concentration_90=concentration_90,
+                cost_70_low=cost_70_low,
+                cost_70_high=cost_70_high,
+                concentration_70=concentration_70,
+            )
+
+            logger.info(f"[筹码分布] {stock_code} 日期={chip.date}: 获利比例={chip.profit_ratio:.1%}, "
                         f"平均成本={chip.avg_cost}, 90%集中度={chip.concentration_90:.2%}, "
                         f"70%集中度={chip.concentration_70:.2%}")
-                return chip
+            return chip
 
         except Exception as e:
             logger.warning(f"[Tushare] 获取筹码分布失败 {stock_code}: {e}")
             return None
-
-    def compute_cyq_metrics(self, df: pd.DataFrame, current_price: float) -> dict:
-        """
-        基于 Tushare 的筹码分布明细表 (cyq_chips) 计算常用筹码指标（优化版）
-        
-        改进点：
-        1. 输入校验，避免静默失败
-        2. 归一化到 1.0，避免多余的乘除运算
-        3. 获利比例采用严格小于当前价（不含当前价）
-        4. 成本区间使用线性插值，提高分位价格精度
-        5. 集中度直接返回小数（0-1区间）
-        
-        :param df: 包含 'price' 和 'percent' 列的 DataFrame  
-        :param current_price: 股票当天的当前价/收盘价 (用于计算获利比例)  
-        :return: 包含各项筹码指标的字典（小数形式）
-        """
-        import numpy as np
-        
-        # ---------- 1. 输入校验 ----------
-        if df is None or df.empty:
-            raise ValueError("筹码分布数据为空，无法计算指标")
-        if 'price' not in df.columns or 'percent' not in df.columns:
-            raise ValueError("DataFrame 缺少必需的 'price' 或 'percent' 列")
-        total_percent = df['percent'].sum()
-        if total_percent == 0:
-            raise ValueError("筹码占比总和为0，数据无效")
-        
-        # ---------- 2. 排序与归一化（到 1.0）----------
-        df_sorted = df.sort_values(by='price', ascending=True).reset_index(drop=True)
-        df_sorted['norm'] = df_sorted['percent'] / total_percent   # 归一化，总和 = 1.0
-        df_sorted['cumsum'] = df_sorted['norm'].cumsum()
-        
-        # ---------- 3. 获利比例（严格小于当前价）----------
-        winner = df_sorted[df_sorted['price'] < current_price]['norm'].sum()
-        
-        # ---------- 4. 平均成本 ----------
-        avg_cost = np.average(df_sorted['price'], weights=df_sorted['norm'])
-        
-        # ---------- 5. 辅助函数：线性插值获取分位价格 ----------
-        def percentile_price(target_pct: float) -> float:
-            """
-            根据目标累积比例（0~1）线性插值返回对应价格。
-            """
-            # 边界情况
-            if target_pct <= 0:
-                return df_sorted.iloc[0]['price']
-            if target_pct >= 1:
-                return df_sorted.iloc[-1]['price']
-            
-            idx = df_sorted['cumsum'].searchsorted(target_pct)
-            # 如果恰好等于某个累积值，直接返回该价格
-            if idx < len(df_sorted) and df_sorted.iloc[idx]['cumsum'] == target_pct:
-                return df_sorted.iloc[idx]['price']
-            
-            # 线性插值
-            if idx == 0:
-                # 目标小于第一个累积值，用第一个点外推（很少发生，但保留）
-                return df_sorted.iloc[0]['price']
-            if idx >= len(df_sorted):
-                return df_sorted.iloc[-1]['price']
-            
-            prev = df_sorted.iloc[idx-1]
-            curr = df_sorted.iloc[idx]
-            if curr['cumsum'] - prev['cumsum'] == 0:
-                return prev['price']
-            ratio = (target_pct - prev['cumsum']) / (curr['cumsum'] - prev['cumsum'])
-            return prev['price'] + ratio * (curr['price'] - prev['price'])
-        
-        # ---------- 6. 90% 成本区与集中度 ----------
-        low90 = percentile_price(0.05)
-        high90 = percentile_price(0.95)
-        if (high90 + low90) != 0:
-            concentration_90 = (high90 - low90) / (high90 + low90)
-        else:
-            concentration_90 = 0.0
-        
-        # ---------- 7. 70% 成本区与集中度 ----------
-        low70 = percentile_price(0.15)
-        high70 = percentile_price(0.85)
-        if (high70 + low70) != 0:
-            concentration_70 = (high70 - low70) / (high70 + low70)
-        else:
-            concentration_70 = 0.0
-        
-        # ---------- 8. 返回结果（所有数值为小数，保留4位）----------
-        return {
-            "获利比例": round(winner, 4),
-            "平均成本": round(avg_cost, 4),
-            "90成本-低": round(low90, 4),
-            "90成本-高": round(high90, 4),
-            "90集中度": round(concentration_90, 4),
-            "70成本-低": round(low70, 4),
-            "70成本-高": round(high70, 4),
-            "70集中度": round(concentration_70, 4),
-        }
 
 
 if __name__ == "__main__":
