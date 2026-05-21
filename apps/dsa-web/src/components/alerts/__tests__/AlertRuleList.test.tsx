@@ -117,6 +117,43 @@ describe('AlertRuleList', () => {
     expect(screen.getByText('未冷却')).toBeInTheDocument();
   });
 
+  it('renders portfolio scope labels and child-target cooldown hint', () => {
+    renderList({
+      rules: [
+        {
+          id: 4,
+          name: '持仓 RSI',
+          targetScope: 'portfolio_holdings',
+          target: 'all',
+          alertType: 'rsi_threshold',
+          parameters: { direction: 'below', period: 12, threshold: 30 },
+          severity: 'warning',
+          enabled: true,
+          source: 'api',
+          cooldownActive: false,
+        },
+        {
+          id: 5,
+          name: '组合止损',
+          targetScope: 'portfolio_account',
+          target: '9',
+          alertType: 'portfolio_stop_loss',
+          parameters: { mode: 'breach' },
+          severity: 'critical',
+          enabled: true,
+          source: 'api',
+          cooldownActive: false,
+        },
+      ],
+    });
+
+    expect(screen.getByText('持仓标的')).toBeInTheDocument();
+    expect(screen.getByText('子目标见触发历史')).toBeInTheDocument();
+    expect(screen.getByText('账户 9')).toBeInTheDocument();
+    expect(screen.getAllByText('组合止损').length).toBeGreaterThan(0);
+    expect(screen.getByText('已触发止损')).toBeInTheDocument();
+  });
+
   it('runs test and toggles enabled state', () => {
     renderList();
 

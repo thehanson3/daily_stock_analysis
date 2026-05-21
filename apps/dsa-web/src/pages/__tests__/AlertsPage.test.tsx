@@ -35,6 +35,12 @@ vi.mock('../../api/alerts', () => ({
   },
 }));
 
+vi.mock('../../api/portfolio', () => ({
+  portfolioApi: {
+    getAccounts: vi.fn().mockResolvedValue({ accounts: [] }),
+  },
+}));
+
 const parsedError = {
   title: '加载失败',
   message: '告警 API 不可用',
@@ -129,6 +135,48 @@ describe('AlertsPage', () => {
     expect(screen.getByText(/600519 price above 1800/)).toBeInTheDocument();
     expect(screen.getByText(/观察值：1801/)).toBeInTheDocument();
     expect(screen.queryByText(/realtime_quote/)).not.toBeInTheDocument();
+  });
+
+  it('renders batch dry-run summary and target results', async () => {
+    testRule.mockResolvedValueOnce({
+      ruleId: 1,
+      targetScope: 'watchlist',
+      status: 'triggered',
+      triggered: true,
+      observedValue: 11,
+      message: 'Evaluated 2 targets',
+      evaluatedCount: 2,
+      triggeredCount: 1,
+      degradedCount: 1,
+      skippedCount: 0,
+      targetResults: [
+        {
+          target: '600519',
+          displayTarget: '自选股 - 600519',
+          status: 'triggered',
+          recordStatus: 'triggered',
+          triggered: true,
+          observedValue: 11,
+          message: 'triggered',
+        },
+        {
+          target: '000001',
+          displayTarget: '自选股 - 000001',
+          status: 'not_triggered',
+          recordStatus: 'degraded',
+          triggered: false,
+          observedValue: null,
+          message: 'degraded',
+        },
+      ],
+    });
+    render(<AlertsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '测试' }));
+
+    expect(await screen.findByText(/评估 2 · 触发 1 · 降级 1 · 跳过 0/)).toBeInTheDocument();
+    expect(screen.getByText('自选股 - 600519')).toBeInTheDocument();
+    expect(screen.getByText(/not_triggered \/ degraded/)).toBeInTheDocument();
   });
 
   it('creates a rule through the page form and reloads rules', async () => {

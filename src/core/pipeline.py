@@ -512,6 +512,8 @@ class StockAnalysisPipeline:
             if result:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
+                if isinstance(fundamental_context, dict):
+                    result.fundamental_context = fundamental_context
 
             # Step 8: 保存分析历史记录
             if result and result.success:
@@ -739,11 +741,15 @@ class StockAnalysisPipeline:
         if not isinstance(market, str) or not market.strip():
             market = get_market_for_stock(normalize_stock_code(code))
 
-        if (
-            market != "cn"
-            or boards_status == "not_supported"
-            or boards_coverage == "not_supported"
-        ):
+        # For HK/US: the offshore adapter already populates belong_boards from
+        # yfinance sector/industry. Don't overwrite it (and we have no AkShare
+        # 板块 endpoint for those markets anyway). Default to [] when callers
+        # pass a minimal context without the key.
+        if market != "cn":
+            enriched_context.setdefault("belong_boards", [])
+            return enriched_context
+
+        if boards_status == "not_supported" or boards_coverage == "not_supported":
             enriched_context["belong_boards"] = []
             return enriched_context
 
@@ -882,6 +888,8 @@ class StockAnalysisPipeline:
                     result.current_price = realtime_data.get("price")
                     result.change_pct = realtime_data.get("change_pct")
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
+                if isinstance(fundamental_context, dict):
+                    result.fundamental_context = fundamental_context
 
             resolved_stock_name = result.name if result and result.name else stock_name
 

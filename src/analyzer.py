@@ -1420,6 +1420,9 @@ class AnalysisResult:
     # ========== 历史对比（Report Engine P0）==========
     query_id: Optional[str] = None  # 本次分析 query_id，用于历史对比时排除本次记录
 
+    # ========== 基本面上下文（仅运行时，用于通知拼装；不持久化到 to_dict）==========
+    fundamental_context: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {

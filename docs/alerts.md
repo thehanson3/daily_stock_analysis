@@ -265,6 +265,72 @@ P5 不做：
 - 不支持 legacy `AGENT_EVENT_ALERT_RULES_JSON` 技术指标规则。
 - 不引入 DSL、规则引擎、新数据库表或分析报告 pipeline 内的技术指标规则引擎。
 
+## P6 持仓与自选股联动
+
+P6 在现有 Alert API、Web 告警中心和 `src/services/alert_worker.py` 评估链路中新增 `watchlist`、`portfolio_holdings`、`portfolio_account` 三类目标范围。规则仍写入 `alert_rules`，触发、降级、失败、通知结果和持久化冷却继续复用 P2-P4 的 `alert_triggers`、`alert_notifications` 与 `alert_cooldowns` 语义，不新增表或迁移。
+
+### P6 scope/type 矩阵
+
+| `target_scope` | `target` | 允许的 `alert_type` | 评估方式 |
+| --- | --- | --- | --- |
+| `single_symbol` | 股票代码 | P1 三类价格/成交量规则 + P5 技术指标 | 单规则单标的 |
+| `watchlist` | `default` | P1 三类价格/成交量规则 + P5 技术指标 | 每轮刷新并读取当前 `STOCK_LIST`，按股票代码展开 |
+| `portfolio_holdings` | `all` 或 active account ID | P1 三类价格/成交量规则 + P5 技术指标 | 从持仓 snapshot 的非零持仓展开 symbol，按 symbol 去重 |
+| `portfolio_account` | `all` 或 active account ID | `portfolio_stop_loss`、`portfolio_concentration`、`portfolio_drawdown`、`portfolio_price_stale` | 账户级风险评估，不展开为单标的 |
+
+创建/更新规则时，`watchlist` / `portfolio_holdings` 不把父级 `target` 当股票代码校验；`portfolio_account` 禁止 price/volume/技术指标类型；`portfolio_holdings` 和 `portfolio_account` 在 `target=<id>` 时会校验账户存在且 active，不存在返回 HTTP 400 + `validation_error`。legacy `AGENT_EVENT_ALERT_RULES_JSON` 不支持 watchlist、portfolio 或技术指标扩展，继续仅支持 `single_symbol` 的 `price_cross`、`price_change_percent`、`volume_spike`。
+
+### Target Identity Contract
+
+P6 将可展示目标与可持久化目标分离：
+
+| 场景 | `effective_target` | `display_target` |
+| --- | --- | --- |
+| `single_symbol` | `<symbol>` | `<symbol>` |
+| `watchlist` 展开子目标 | `<symbol>` | `自选股 - <symbol>` |
+| `portfolio_holdings` 展开子目标 | `<symbol>` | `持仓 - <symbol>` |
+| `portfolio_account target=all` | `account:all` | `全部账户` |
+| `portfolio_account target=<id>` | `account:<id>` | `账户 <id>` |
+
+- `alert_triggers.target`、`alert_cooldowns.target`、P4 `rule_id + target + data_source + data_timestamp` 去重全部使用 `effective_target`。
+- `RuntimeAlertRule.key` 对展开后的子目标使用 `{parent_key}|{effective_target}`，避免 DB cooldown 读取失败时的进程内 fallback 把同一父规则下的不同子目标互相 suppress。
+- `display_target` 不写入 `alert_triggers.target`，仅用于通知标题、dry-run `target_results` 和 Web 展示。
+- P6 不做跨规则同标的通知合并；同一股票若同时命中 watchlist 子规则和独立 `single_symbol` 规则，会按每条规则独立记录和通知。
+
+### Dry-run 聚合
+
+- `POST /api/v1/alerts/rules/{rule_id}/test` 对批量规则返回聚合字段：`evaluated_count`、`triggered_count`、`degraded_count`、`skipped_count`、`target_results`。
+- 展开目标 soft cap 为 100；dry-run 中超过 soft cap 的目标记为 `degraded` 聚合结果并写日志。worker 运行时只评估前 100 个展开目标并写 warning，不为 overflow 本身写 `alert_triggers` 历史。
+- dry-run 使用受限并发评估，单目标超时 10 秒，总评估超时 30 秒；未完成目标记为 `skipped`。
+- 任一目标 triggered 时顶层 `status=triggered`；无触发但存在成功评估、skipped 或 degraded 时顶层 `status=not_triggered`；无法展开或全部失败时才返回 `evaluation_error`。
+- 空 watchlist / 空 holdings：dry-run 返回 `not_triggered` 并在 `target_results` 中给出 `record_status=skipped`；worker 会写 `skipped` 历史。
+- `degraded_count` 统计全部展开评估结果中 `record_status=degraded` 的条目；`target_results` 仅展示前 20 条，排序为 triggered 优先，其次 degraded/failed，再按 target 排序。
+
+### 持仓风险规则
+
+| `alert_type` | 参数 | 观察值 | 触发语义 |
+| --- | --- | --- | --- |
+| `portfolio_stop_loss` | `mode=near|breach`，默认 `near` | 受影响标的最大 `loss_pct` | `near` 使用 `stop_loss.near_alert`，`breach` 只统计 `is_triggered=true` 的 items；每账户每轮最多一条 trigger |
+| `portfolio_concentration` | - | `concentration.top_weight_pct` | `top_weight_pct >= portfolio_risk_concentration_alert_pct` |
+| `portfolio_drawdown` | - | `drawdown.max_drawdown_pct` | 复用 `PortfolioRiskService` 的 `drawdown.alert`；`current_drawdown_pct` 写 diagnostics |
+| `portfolio_price_stale` | - | stale/missing 价格持仓数量 | 任一 position `price_stale=true` 或 `price_available=false` |
+
+portfolio diagnostics 必含 `account_id`（或 `all`）、`currency`、`as_of`、`price_stale`、`fx_stale`、`data_available`、`top_affected_symbols`。`portfolio_stop_loss`、`portfolio_concentration`、`portfolio_drawdown` 复用 `PortfolioRiskService.get_risk_report()`；`portfolio_price_stale` 复用 `PortfolioService.get_portfolio_snapshot()` 的 position price metadata。
+
+### Web 与 cooldown 摘要
+
+- Web 创建表单新增目标范围选择；`watchlist` / `portfolio_holdings` 只显示 price/volume/P5 技术指标类型，`portfolio_account` 只显示四类 portfolio 风险类型。
+- `portfolio_holdings` / `portfolio_account` 加载账户列表失败时，表单保留 `all` 选项并展示错误。
+- 规则列表上的 `cooldown_active` 对 `single_symbol` 和 `portfolio_account` 准确；`watchlist` / `portfolio_holdings` 是父规则摘要，不代表每个子目标的冷却状态，子目标冷却以触发历史和 `effective_target` 为准。
+- dry-run UI 展示聚合计数和最多 20 条 `target_results` 明细。
+
+P6 不做：
+
+- 不做 P7 Market Light。
+- 不做财报日前、分红除权日前提醒；这类规则需要稳定日期契约后另起 follow-up。
+- 不做 sector 级集中度告警；P6 集中度使用 symbol 维度 `top_weight_pct`。
+- 不做跨规则同标的通知合并、分钟线、多市场时区精确判定或 legacy JSON 扩展。
+
 ## Phase 边界
 
 - P0：本文档、契约、存储评估和兼容测试。
@@ -294,3 +360,4 @@ P5 不做：
 - P3 是 Web 和文档改动。最小回滚方式是 revert P3 PR；不会删除已有规则、触发历史或 legacy JSON 配置。
 - P4 新增 `alert_cooldowns` SQLite 表并开始写入 `alert_notifications`。最小回滚方式是 revert P4 PR；已经创建的 `alert_cooldowns`、`alert_triggers`、`alert_notifications` 数据不会自动删除。如需清理，需要维护者确认后手动删除对应表或记录。
 - P5 新增 Alert API/Web 支持的技术指标规则。最小回滚方式是 revert P5 PR；已创建的 P5 `alert_rules` 记录不会自动删除，旧代码会在 worker 加载阶段 skip unsupported `alert_type`，不影响 legacy 三类规则执行。如需清理，需要维护者确认后手动删除相关规则记录。
+- P6 新增 Alert API/Web 支持的 watchlist、portfolio holdings 与 portfolio account 规则。最小回滚方式是 revert P6 PR；没有新表或迁移，已创建的 P6 `alert_rules` 会保留。回滚前建议 disable/delete 非 `single_symbol` 的 P6 规则；否则旧 worker 可能把 `watchlist` / `portfolio_holdings` 的父级 `target` 当作股票代码评估并产生 failed/skipped 噪声，portfolio 专用 `alert_type` 会在 worker 加载阶段被 skip。

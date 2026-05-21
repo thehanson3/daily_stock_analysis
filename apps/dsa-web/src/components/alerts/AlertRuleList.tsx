@@ -30,6 +30,10 @@ const ALERT_TYPE_FILTER_OPTIONS = [
   { value: 'macd_cross', label: 'MACD 金叉/死叉' },
   { value: 'kdj_cross', label: 'KDJ 金叉/死叉' },
   { value: 'cci_threshold', label: 'CCI 阈值' },
+  { value: 'portfolio_stop_loss', label: '组合止损' },
+  { value: 'portfolio_concentration', label: '组合集中度' },
+  { value: 'portfolio_drawdown', label: '组合回撤' },
+  { value: 'portfolio_price_stale', label: '组合价格状态' },
 ];
 
 const typeLabel: Record<AlertType, string> = {
@@ -41,12 +45,23 @@ const typeLabel: Record<AlertType, string> = {
   macd_cross: 'MACD 金叉/死叉',
   kdj_cross: 'KDJ 金叉/死叉',
   cci_threshold: 'CCI 阈值',
+  portfolio_stop_loss: '组合止损',
+  portfolio_concentration: '组合集中度',
+  portfolio_drawdown: '组合回撤',
+  portfolio_price_stale: '组合价格状态',
 };
 
 const severityLabel: Record<string, string> = {
   info: '提示',
   warning: '警告',
   critical: '严重',
+};
+
+const scopeLabel: Record<string, string> = {
+  single_symbol: '单标的',
+  watchlist: '自选股',
+  portfolio_holdings: '持仓标的',
+  portfolio_account: '持仓账户',
 };
 
 function formatParameters(rule: AlertRuleItem): string {
@@ -72,11 +87,29 @@ function formatParameters(rule: AlertRuleItem): string {
     }
     return `KDJ(${rule.parameters.period ?? '--'},${rule.parameters.kPeriod ?? '--'},${rule.parameters.dPeriod ?? '--'}) ${direction}`;
   }
+  if (rule.alertType === 'portfolio_stop_loss') {
+    return rule.parameters.mode === 'breach' ? '已触发止损' : '接近止损';
+  }
+  if (rule.alertType === 'portfolio_concentration') return 'top_weight_pct';
+  if (rule.alertType === 'portfolio_drawdown') return 'max_drawdown_pct';
+  if (rule.alertType === 'portfolio_price_stale') return 'price_stale / price_available';
   return `CCI${rule.parameters.period ?? '--'} ${rule.parameters.direction === 'below' ? '下穿' : '上穿'} ${rule.parameters.threshold ?? '--'}`;
 }
 
 function isCoolingDown(rule: AlertRuleItem): boolean {
   return rule.cooldownActive === true;
+}
+
+function formatTarget(rule: AlertRuleItem): string {
+  if (rule.targetScope === 'watchlist') return 'default';
+  if (rule.targetScope === 'portfolio_account' || rule.targetScope === 'portfolio_holdings') {
+    return rule.target === 'all' ? '全部账户' : `账户 ${rule.target}`;
+  }
+  return rule.target;
+}
+
+function hasChildTargetCooldown(rule: AlertRuleItem): boolean {
+  return rule.targetScope === 'watchlist' || rule.targetScope === 'portfolio_holdings';
 }
 
 interface AlertRuleListProps {
@@ -172,7 +205,10 @@ export const AlertRuleList: React.FC<AlertRuleListProps> = ({
                     <div className="font-medium text-foreground">{rule.name}</div>
                     <div className="mt-1 text-xs text-muted-text">来源：{rule.source}</div>
                   </td>
-                  <td className="px-3 py-3 font-mono text-secondary-text">{rule.target}</td>
+                  <td className="px-3 py-3 text-secondary-text">
+                    <div className="font-mono">{formatTarget(rule)}</div>
+                    <div className="mt-1 text-xs">{scopeLabel[rule.targetScope] ?? rule.targetScope}</div>
+                  </td>
                   <td className="px-3 py-3">
                     <div className="flex flex-col items-start gap-1">
                       <Badge variant="info">{typeLabel[rule.alertType]}</Badge>
@@ -190,6 +226,9 @@ export const AlertRuleList: React.FC<AlertRuleListProps> = ({
                   <td className="px-3 py-3 text-xs text-secondary-text">
                     <div>{isCoolingDown(rule) ? '冷却中' : '未冷却'}</div>
                     <div className="mt-1">{formatDateTime(rule.cooldownUntil)}</div>
+                    {hasChildTargetCooldown(rule) ? (
+                      <div className="mt-1 text-muted-text">子目标见触发历史</div>
+                    ) : null}
                   </td>
                   <td className="px-3 py-3 text-xs text-secondary-text">{formatDateTime(rule.updatedAt ?? rule.createdAt)}</td>
                   <td className="px-3 py-3">

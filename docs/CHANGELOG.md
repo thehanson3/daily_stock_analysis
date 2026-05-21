@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [改进] 邮件等静态渠道单股/仪表盘报告补充财务摘要、股东回报和关联板块三块结构化数据，沿用 `fundamental_context` 字段，缺失时自动隐藏，对应小节支持中英双语。
+- [新功能] 港股/美股基本面接入 yfinance 适配器：`get_fundamental_context` 对 HK/US 返回 `valuation/growth/earnings/belong_boards`（institution/capital_flow/dragon_tiger/boards 暂无对应数据源仍标记 `not_supported`），财务摘要、股东回报与关联板块出现在邮件报告中。
+- [改进] yfinance 适配器拆分财报币种与分红币种：`earnings.financial_report.currency` 来自 `info.financialCurrency`，`earnings.dividend.currency` 来自 `info.currency`；HK ADR 财报 CNY、分红 HKD 不再混淆；通知层 per-share 渲染读取 `dividend.currency`，金额按 USD/HKD/CNY 分别后缀 美元/港元/元。
+- [改进] yfinance 分红 TTM 收益率改为按 `ttm_cash / latest_price * 100`（同币种）重算，仅在 TTM cash 或 latest price 缺失时回退到 `trailingAnnualDividendYield`/`dividendYield`，避免与 TTM cash 口径错位。
+- [改进] 通知报告中关联板块表格在缺少板块涨跌数据时自动收敛为 2 列（板块 / 类型），避免 HK/US 出现成片 "--"；财务摘要与股东回报表加入列对齐标记，数字右对齐、日期居中。
 - [改进] 将每日股票分析 workflow 文件重命名为 `00-daily-analysis.yml`，让 GitHub Actions 列表优先展示用户最常用的每日分析入口。
 - [修复] 抽出 LiteLLM 生成参数适配层，对严格 temperature 模型按请求临时固定或省略参数，避免 GPT-5 / o 系列与 Kimi K2.6 拒绝默认温度请求。
 - [改进] LiteLLM 参数错误支持一次请求内自动修正重试，并在成功后进程内缓存策略，降低新模型参数兼容问题的人工配置成本。
@@ -30,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 告警中心 P4 记录真实通知尝试结果，并为持久化规则新增可查询的业务冷却状态。
 - [修复] 持仓快照在当天刷新时优先使用实时行情重算当前价、市值与未实现盈亏，避免复用旧收盘价导致页面刷新后盈亏不变。
 - [新功能] 告警中心 P5 支持 MA、RSI、MACD、KDJ、CCI 日线技术指标规则，并复用现有触发历史、通知结果和持久化冷却链路。
+- [新功能] 告警中心 P6 支持自选股、持仓标的和持仓账户联动规则，复用现有触发历史、通知结果与业务冷却链路。
 - [改进] 将 RSI 计算口径从 SMA 调整为 Wilder's EMA / SMMA，统一分析报告与告警阈值口径。
 - [改进] 大盘复盘将红绿灯与盘面温度合并为终端友好的盘面信号分数，移除色块进度条与重复温度行。
 - [改进] 大盘复盘近三日市场线索改为标题与来源链接列表，移除摘要片段，降低中英混排和误读风险。

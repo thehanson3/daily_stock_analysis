@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -24,6 +25,7 @@ import src.auth as auth
 from api.app import create_app
 from src.config import Config
 from src.repositories.alert_repo import AlertRepository
+from src.services.portfolio_service import PortfolioService
 from src.storage import AlertCooldownRecord, AlertNotificationRecord, AlertTriggerRecord, Base, DatabaseManager
 
 
@@ -308,6 +310,146 @@ class AlertApiTestCase(unittest.TestCase):
             )
             self.assertEqual(resp.status_code, 400, resp.text)
             self.assertEqual(resp.json()["error"], "validation_error")
+
+    def test_p6_scope_type_matrix_and_target_validation(self) -> None:
+        account = PortfolioService().create_account(
+            name="Main",
+            broker="Demo",
+            market="us",
+            base_currency="USD",
+        )
+        valid_cases = [
+            {
+                "target_scope": "watchlist",
+                "target": "default",
+                "alert_type": "price_cross",
+                "parameters": {"direction": "above", "price": 10},
+            },
+            {
+                "target_scope": "portfolio_holdings",
+                "target": str(account["id"]),
+                "alert_type": "rsi_threshold",
+                "parameters": {"direction": "below", "period": 12, "threshold": 30},
+            },
+            {
+                "target_scope": "portfolio_account",
+                "target": "all",
+                "alert_type": "portfolio_stop_loss",
+                "parameters": {"mode": "breach"},
+            },
+        ]
+        for body in valid_cases:
+            resp = self.client.post("/api/v1/alerts/rules", json=body)
+            self.assertEqual(resp.status_code, 200, resp.text)
+            self.assertEqual(resp.json()["target_scope"], body["target_scope"])
+
+        invalid_cases = [
+            {
+                "target_scope": "watchlist",
+                "target": "600519",
+                "alert_type": "price_cross",
+                "parameters": {"direction": "above", "price": 10},
+            },
+            {
+                "target_scope": "portfolio_account",
+                "target": "all",
+                "alert_type": "price_cross",
+                "parameters": {"direction": "above", "price": 10},
+            },
+            {
+                "target_scope": "portfolio_holdings",
+                "target": "all",
+                "alert_type": "portfolio_drawdown",
+                "parameters": {},
+            },
+            {
+                "target_scope": "portfolio_account",
+                "target": "99999",
+                "alert_type": "portfolio_drawdown",
+                "parameters": {},
+            },
+        ]
+        for body in invalid_cases:
+            resp = self.client.post("/api/v1/alerts/rules", json=body)
+            self.assertEqual(resp.status_code, 400, resp.text)
+            self.assertEqual(resp.json()["error"], "validation_error")
+
+    def test_p6_watchlist_dry_run_aggregates_targets_without_stock_code_validation(self) -> None:
+        rule = self._create_rule({
+            "name": "Watchlist breakout",
+            "target_scope": "watchlist",
+            "target": "default",
+            "alert_type": "price_cross",
+            "parameters": {"direction": "above", "price": 10},
+        })
+
+        async def _quote(_monitor, stock_code):
+            return SimpleNamespace(price=11.0 if stock_code == "600519" else 9.0)
+
+        with patch("src.agent.events.EventMonitor._get_realtime_quote", new=_quote):
+            resp = self.client.post(f"/api/v1/alerts/rules/{rule['id']}/test")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        payload = resp.json()
+        self.assertEqual(payload["target_scope"], "watchlist")
+        self.assertTrue(payload["triggered"])
+        self.assertGreaterEqual(payload["evaluated_count"], 1)
+        self.assertEqual(payload["triggered_count"], 1)
+        self.assertEqual(payload["target_results"][0]["target"], "600519")
+
+    def test_p6_watchlist_dry_run_timeout_counts_target_as_skipped(self) -> None:
+        rule = self._create_rule({
+            "name": "Watchlist slow",
+            "target_scope": "watchlist",
+            "target": "default",
+            "alert_type": "price_cross",
+            "parameters": {"direction": "above", "price": 10},
+        })
+
+        async def _slow_quote(_monitor, _stock_code):
+            await asyncio.sleep(0.05)
+            return SimpleNamespace(price=11.0)
+
+        with patch("src.services.alert_service.DRY_RUN_TARGET_TIMEOUT_SECONDS", 0.001), patch(
+            "src.agent.events.EventMonitor._get_realtime_quote",
+            new=_slow_quote,
+        ):
+            resp = self.client.post(f"/api/v1/alerts/rules/{rule['id']}/test")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        payload = resp.json()
+        self.assertEqual(payload["status"], "not_triggered")
+        self.assertFalse(payload["triggered"])
+        self.assertEqual(payload["evaluated_count"], 1)
+        self.assertEqual(payload["skipped_count"], 1)
+        self.assertEqual(payload["target_results"][0]["record_status"], "skipped")
+        self.assertIn("timed out", payload["target_results"][0]["message"])
+
+    def test_p6_portfolio_account_cooldown_summary_uses_effective_target(self) -> None:
+        created = self._create_rule({
+            "name": "Portfolio drawdown",
+            "target_scope": "portfolio_account",
+            "target": "all",
+            "alert_type": "portfolio_drawdown",
+            "parameters": {},
+        })
+        repo = AlertRepository(self.db)
+        now_dt = datetime.now()
+        cooldown_until = now_dt + timedelta(minutes=5)
+        repo.upsert_cooldown(
+            rule_id=created["id"],
+            rule_key="portfolio_account:all:portfolio_drawdown:{}|account:all",
+            target="account:all",
+            severity="warning",
+            last_triggered_at=now_dt,
+            cooldown_until=cooldown_until,
+            reason="active cooldown",
+        )
+
+        detail_resp = self.client.get(f"/api/v1/alerts/rules/{created['id']}")
+
+        self.assertEqual(detail_resp.status_code, 200, detail_resp.text)
+        self.assertTrue(detail_resp.json()["cooldown_active"])
 
     def test_rejects_unsupported_and_invalid_rules(self) -> None:
         unsupported = self.client.post(
