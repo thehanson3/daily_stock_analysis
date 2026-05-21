@@ -1128,9 +1128,9 @@ class TushareFetcher(BaseFetcher):
         try:
             # 2. 获取可用的交易日
             print("[DEBUG] 调用 get_trade_time...")
-            trade_date = self.get_trade_time(early_time='00:00', late_time='19:00')
+            start_date = self.get_trade_time(early_time='00:00', late_time='19:00')
             print(f"[DEBUG] get_trade_time 返回: {trade_date}")
-            if not trade_date:
+            if not start_date:
                 print("[DEBUG] trade_date 为空，返回 None")
                 return None
 
@@ -1143,8 +1143,8 @@ class TushareFetcher(BaseFetcher):
             df = self._call_api_with_rate_limit(
                 "cyq_perf",
                 ts_code=ts_code,
-                start_date=trade_date,
-                end_date=trade_date,
+                start_date=start_date,
+                end_date=start_date,
                 fields='trade_date,profit_ratio,avg_cost,concentration,concentration70,cost_5pct,cost_95pct,cost_15pct,cost_85pct'
             )
             print(f"[DEBUG] cyq_perf 返回 df: {type(df)}, 长度: {len(df) if df is not None else 'None'}")
