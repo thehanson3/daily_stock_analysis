@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 收紧港股新闻相关度中的裸短码匹配，避免将指数点数等普通数字误判为目标股票代码。
 - [修复] 修复个股新闻相关度中美股小写 ticker 后缀识别与 A/HK 弱相关新闻中文优先比较顺序。
 - [文档] Issue #1356 的结构化检测告警为既有上下文误报：本次仅调整个股新闻检索的相关度评分与分层排序（`direct_company_news` / `sector_related_news` / `macro_market_news`），不触及模型名、provider、LiteLLM 参数、Base URL 及运行时配置清理/迁移语义；无配置回写副作用，回退路径为回滚本次提交。
+- [修复] `/api/v1/analysis/status/{task_id}` 在 completed 内存队列路径补齐 `query_id` 与 `created_at`，避免分析结果被解析为空。
 
 ## [3.17.1] - 2026-05-16
 
