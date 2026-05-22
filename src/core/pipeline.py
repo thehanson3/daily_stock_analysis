@@ -627,8 +627,8 @@ class StockAnalysisPipeline:
                 'risk_factors': trend_result.risk_factors,
             }
 
-        # Issue #234: Override today with realtime OHLC + trend MA for intraday analysis
-        # Guard: trend_result.ma5 > 0 ensures MA calculation succeeded (data sufficient)
+        # Issue #234：盘中分析使用实时 OHLC 与趋势 MA 覆盖 today。
+        # 防护条件：trend_result.ma5 > 0 表示 MA 计算已成功且数据量充足。
         if realtime_quote and trend_result and trend_result.ma5 > 0:
             price = getattr(realtime_quote, 'price', None)
             if price is not None and price > 0:
@@ -636,6 +636,12 @@ class StockAnalysisPipeline:
                 if enhanced.get('yesterday') and isinstance(enhanced['yesterday'], dict):
                     yesterday_close = enhanced['yesterday'].get('close')
                 orig_today = enhanced.get('today') or {}
+                market_today = get_market_now(
+                    get_market_for_stock(normalize_stock_code(enhanced.get('code', '')))
+                ).date().isoformat()
+                source = getattr(realtime_quote, 'source', None)
+                source_name = getattr(source, 'value', source)
+                source_name = str(source_name) if source_name is not None else 'unknown'
                 open_p = getattr(realtime_quote, 'open_price', None) or getattr(
                     realtime_quote, 'pre_close', None
                 ) or yesterday_close or orig_today.get('open') or price
@@ -652,6 +658,9 @@ class StockAnalysisPipeline:
                     'ma5': trend_result.ma5,
                     'ma10': trend_result.ma10,
                     'ma20': trend_result.ma20,
+                    'date': market_today,
+                    'data_source': f"realtime:{source_name}",
+                    'realtime_source': source_name,
                 }
                 if vol is not None:
                     realtime_today['volume'] = vol
@@ -659,16 +668,20 @@ class StockAnalysisPipeline:
                     realtime_today['amount'] = amt
                 if pct is not None:
                     realtime_today['pct_chg'] = pct
+                realtime_owned_fields = {
+                    'open', 'high', 'low', 'close',
+                    'volume', 'amount', 'pct_chg', 'pctChg',
+                    'date', 'data_source', 'dataSource', 'source',
+                    'realtime_source', 'realtimeSource',
+                }
                 for k, v in orig_today.items():
-                    if k not in realtime_today and v is not None:
+                    if k not in realtime_today and k not in realtime_owned_fields and v is not None:
                         realtime_today[k] = v
                 enhanced['today'] = realtime_today
                 enhanced['ma_status'] = self._compute_ma_status(
                     price, trend_result.ma5, trend_result.ma10, trend_result.ma20
                 )
-                enhanced['date'] = get_market_now(
-                    get_market_for_stock(normalize_stock_code(enhanced.get('code', '')))
-                ).date().isoformat()
+                enhanced['date'] = market_today
                 if yesterday_close is not None:
                     try:
                         yc = float(yesterday_close)
@@ -1458,8 +1471,8 @@ class StockAnalysisPipeline:
         self, df: pd.DataFrame, realtime_quote: Any, code: str
     ) -> pd.DataFrame:
         """
-        Augment historical OHLCV with today's realtime quote for intraday MA calculation.
-        Issue #234: Use realtime price instead of yesterday's close for technical indicators.
+        使用当日实时行情补齐历史 OHLCV，用于盘中 MA 计算。
+        Issue #234：技术指标使用实时价格，而不是沿用昨日收盘价。
         """
         if df is None or df.empty or 'close' not in df.columns:
             return df
@@ -1469,7 +1482,7 @@ class StockAnalysisPipeline:
         if price is None or not (isinstance(price, (int, float)) and price > 0):
             return df
 
-        # Optional: skip augmentation on non-trading days (fail-open)
+        # 非交易日可跳过实时补齐；异常情况下保持失败开放。
         enable_realtime_tech = getattr(
             self.config, 'enable_realtime_technical_indicators', True
         )
@@ -1496,7 +1509,7 @@ class StockAnalysisPipeline:
         pct = getattr(realtime_quote, 'change_pct', None)
 
         if last_date >= market_today:
-            # Update last row with realtime close (copy to avoid mutating caller's df)
+            # 使用实时收盘价更新最后一行；先复制，避免修改调用方传入的 df。
             df = df.copy()
             idx = df.index[-1]
             df.loc[idx, 'close'] = price
@@ -1513,7 +1526,7 @@ class StockAnalysisPipeline:
             if pct is not None:
                 df.loc[idx, 'pct_chg'] = pct
         else:
-            # Append virtual today row
+            # 追加一行虚拟的当日实时 K 线。
             new_row = {
                 'code': code,
                 'date': market_today,

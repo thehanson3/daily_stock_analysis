@@ -404,7 +404,6 @@ docker run -d \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/logs:/app/logs" \
   -v "$(pwd)/reports:/app/reports" \
-  -v "$(pwd)/.env:/app/.env" \
   zhulinsen/daily_stock_analysis:latest \
   python main.py --serve-only --host 0.0.0.0 --port 8000
 
@@ -415,7 +414,6 @@ docker run -d \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/logs:/app/logs" \
   -v "$(pwd)/reports:/app/reports" \
-  -v "$(pwd)/.env:/app/.env" \
   zhulinsen/daily_stock_analysis:latest
 ```
 
@@ -449,7 +447,6 @@ x-common: &common
     - ../data:/app/data
     - ../logs:/app/logs
     - ../reports:/app/reports
-    - ../.env:/app/.env
     - ../strategies:/app/strategies:ro
 
 services:
@@ -469,12 +466,13 @@ services:
 
 ### `.env` and Volume Mapping
 
-For both `docker run` and Compose, keep these two layers in mind:
+For both `docker run` and Compose, keep startup environment injection separate from runtime file writes:
 
 - Environment injection: `--env-file .env` or Compose `env_file`
   This passes key/value pairs from `.env` into the container process environment.
-- File mapping: `-v "$(pwd)/.env:/app/.env"` or Compose `../.env:/app/.env`
-  This mounts the same `.env` file into the container so the Web settings page and backend read/write the same persisted config file.
+- Runtime config writes: do not bind-mount the host `.env` as a single file over the container's `.env` path. Docker treats the target as a mount point, so the `os.replace()` atomic update used during config saves can fail with `Device or resource busy`; fallback in-place writes can also fail on permissions.
+
+The default Compose and `docker run` examples only use `env_file` / `--env-file` for startup config injection and no longer mount the host `.env` file into the container. Runtime config saved from the WebUI is written to the container-local config file by default and is not the same as writing back to the host `.env`; after deleting or recreating the container, startup still uses the injected `.env` file. If you need persistent runtime config, point `ENV_FILE` at a writable data volume file such as `/app/data/runtime.env` instead of using a single-file `.env` bind mount.
 
 Recommended host mappings:
 
@@ -519,7 +517,6 @@ docker run -d \
   -v "$(pwd)/data:/app/data" \
   -v "$(pwd)/logs:/app/logs" \
   -v "$(pwd)/reports:/app/reports" \
-  -v "$(pwd)/.env:/app/.env" \
   stock-analysis \
   python main.py --serve-only --host 0.0.0.0 --port 8000
 ```
