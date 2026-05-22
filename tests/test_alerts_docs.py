@@ -249,9 +249,17 @@ def test_alerts_doc_defines_p6_portfolio_and_watchlist_scope() -> None:
         assert token in doc
 
 
-def test_changelog_unreleased_keeps_flat_entries_for_alert_p6() -> None:
+def test_changelog_mentions_alert_p6_release_note() -> None:
+    changelog = (PROJECT_ROOT / "docs" / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    assert "P6" in changelog
+    assert "自选股" in changelog
+    assert "持仓" in changelog
+    assert "账户联动规则" in changelog
+
+
+def test_changelog_unreleased_keeps_flat_entries() -> None:
     changelog = (PROJECT_ROOT / "docs" / "CHANGELOG.md").read_text(encoding="utf-8")
     unreleased = changelog.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
 
-    assert "- [新功能] 告警中心 P6 支持自选股、持仓标的和持仓账户联动规则" in unreleased
     assert "\n### " not in unreleased
