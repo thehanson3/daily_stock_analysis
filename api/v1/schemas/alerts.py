@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-TargetScopeValue = Literal["single_symbol", "watchlist", "portfolio_holdings", "portfolio_account"]
+TargetScopeValue = Literal["single_symbol", "watchlist", "portfolio_holdings", "portfolio_account", "market"]
 SeverityValue = Literal["info", "warning", "critical"]
 DryRunStatusValue = Literal["triggered", "not_triggered", "evaluation_error"]
 TargetRecordStatusValue = Literal["triggered", "skipped", "degraded", "failed"]

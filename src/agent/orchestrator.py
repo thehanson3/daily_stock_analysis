@@ -706,6 +706,8 @@ class AgentOrchestrator:
             ctx.meta["skills_requested"] = requested_skills or []
             ctx.meta["strategies_requested"] = requested_skills or []
             ctx.meta["report_language"] = normalize_report_language(context.get("report_language", "zh"))
+            if context.get("market_phase_context"):
+                ctx.meta["market_phase_context"] = context["market_phase_context"]
 
             # Pre-populate data fields that the caller already has
             for data_key in ("realtime_quote", "daily_history", "chip_distribution",

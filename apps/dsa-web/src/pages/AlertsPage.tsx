@@ -263,7 +263,7 @@ const AlertsPage: React.FC = () => {
       <PageHeader
         eyebrow="Alert Center"
         title="告警中心"
-        description="管理事件告警与日线技术指标规则，执行一次性测试，并查看后台评估任务记录的触发历史。"
+        description="管理事件告警、日线技术指标、自选股、持仓/账户联动和大盘红绿灯规则，执行一次性测试，并查看后台评估任务记录的触发历史。"
       />
 
       {createError ? <ApiErrorAlert error={createError} onDismiss={() => setCreateError(null)} /> : null}

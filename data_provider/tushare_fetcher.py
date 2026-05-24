@@ -57,7 +57,7 @@ def _is_etf_code(stock_code: str) -> bool:
     - Shanghai ETF: 51xxxx, 52xxxx, 56xxxx, 58xxxx
     - Shenzhen ETF: 15xxxx, 16xxxx, 18xxxx
     """
-    code = stock_code.strip().split('.')[0]
+    code = normalize_stock_code(stock_code)
     return code.startswith(_ETF_ALL_PREFIXES) and len(code) == 6
 
 
@@ -358,9 +358,15 @@ class TushareFetcher(BaseFetcher):
         """
         raw_code = stock_code.strip()
         
-        # Already has suffix
+        # Already has suffix.
         if '.' in raw_code:
-            ts_code = raw_code.upper()
+            upper = raw_code.upper()
+            code = normalize_stock_code(raw_code)
+            exchange_hint = self._detect_exchange_hint(raw_code)
+            if exchange_hint in ("SH", "SZ", "BJ") and code.isdigit():
+                return f"{code}.{exchange_hint}"
+
+            ts_code = upper
             if ts_code.endswith('.SS'):
                 return f"{ts_code[:-3]}.SH"
             return ts_code

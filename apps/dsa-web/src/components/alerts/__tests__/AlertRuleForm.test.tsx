@@ -210,6 +210,42 @@ describe('AlertRuleForm', () => {
     });
   });
 
+  it('submits a market light status rule payload', async () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('目标范围'), { target: { value: 'market' } });
+    fireEvent.change(screen.getByLabelText('市场区域'), { target: { value: 'hk' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        targetScope: 'market',
+        target: 'hk',
+        alertType: 'market_light_status',
+        parameters: { statuses: ['red', 'yellow'] },
+      }));
+    });
+  });
+
+  it('submits a market light score-drop rule payload', async () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('目标范围'), { target: { value: 'market' } });
+    fireEvent.change(screen.getByLabelText('市场区域'), { target: { value: 'us' } });
+    fireEvent.change(screen.getByLabelText('规则类型'), { target: { value: 'market_light_score_drop' } });
+    fireEvent.change(screen.getByLabelText('Score 下降阈值'), { target: { value: '12' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        targetScope: 'market',
+        target: 'us',
+        alertType: 'market_light_score_drop',
+        parameters: { minDrop: 12 },
+      }));
+    });
+  });
+
   it('keeps all account option when account loading fails', async () => {
     getAccounts.mockRejectedValueOnce(new Error('boom'));
     render(<AlertRuleForm onSubmit={onSubmit} />);

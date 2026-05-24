@@ -154,6 +154,48 @@ describe('AlertRuleList', () => {
     expect(screen.getByText('已触发止损')).toBeInTheDocument();
   });
 
+  it('renders market scope labels, filters, and parameters', () => {
+    renderList({
+      rules: [
+        {
+          id: 6,
+          name: 'A 股红黄灯',
+          targetScope: 'market',
+          target: 'cn',
+          alertType: 'market_light_status',
+          parameters: { statuses: ['red', 'yellow'] },
+          severity: 'critical',
+          enabled: true,
+          source: 'api',
+          cooldownActive: false,
+        },
+        {
+          id: 7,
+          name: '美股分数下降',
+          targetScope: 'market',
+          target: 'us',
+          alertType: 'market_light_score_drop',
+          parameters: { minDrop: 15 },
+          severity: 'warning',
+          enabled: true,
+          source: 'api',
+          cooldownActive: false,
+        },
+      ],
+    });
+
+    expect(screen.getByText('A 股')).toBeInTheDocument();
+    expect(screen.getByText('美股')).toBeInTheDocument();
+    expect(screen.getAllByText('大盘市场').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('大盘红绿灯状态').length).toBeGreaterThan(0);
+    expect(screen.getByText('红灯 / 黄灯')).toBeInTheDocument();
+    expect(screen.getByText('Score 下降 >= 15')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('规则类型'), { target: { value: 'market_light_score_drop' } });
+
+    expect(onAlertTypeFilterChange).toHaveBeenCalledWith('market_light_score_drop');
+  });
+
   it('runs test and toggles enabled state', () => {
     renderList();
 

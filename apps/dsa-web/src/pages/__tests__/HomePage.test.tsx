@@ -160,6 +160,36 @@ describe('HomePage', () => {
         name: getReportText(normalizeReportLanguage(historyReport.meta.reportLanguage)).fullReport,
       }),
     ).toBeInTheDocument();
+    expect(historyApi.getMarkdown).not.toHaveBeenCalled();
+  });
+
+  it('loads markdown only after opening the full report drawer', async () => {
+    vi.mocked(historyApi.getList).mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 20,
+      items: [historyItem],
+    });
+    vi.mocked(historyApi.getDetail).mockResolvedValue(historyReport);
+    vi.mocked(historyApi.getMarkdown).mockResolvedValue('# Full Markdown Report');
+
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+
+    const fullReportButton = await screen.findByRole('button', {
+      name: getReportText(normalizeReportLanguage(historyReport.meta.reportLanguage)).fullReport,
+    });
+    expect(historyApi.getMarkdown).not.toHaveBeenCalled();
+
+    fireEvent.click(fullReportButton);
+
+    await waitFor(() => {
+      expect(historyApi.getMarkdown).toHaveBeenCalledWith(historyReport.meta.id);
+    });
+    expect(await screen.findByRole('heading', { name: 'Full Markdown Report' })).toBeInTheDocument();
   });
 
   it('shows the empty report workspace when history is empty', async () => {

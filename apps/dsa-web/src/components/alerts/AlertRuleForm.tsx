@@ -6,6 +6,8 @@ import type {
   AlertSeverity,
   AlertTargetScope,
   AlertType,
+  MarketLightStatus,
+  MarketRegion,
   PortfolioStopLossMode,
 } from '../../types/alerts';
 import type { PortfolioAccountItem } from '../../types/portfolio';
@@ -30,11 +32,17 @@ const PORTFOLIO_ALERT_TYPE_OPTIONS = [
   { value: 'portfolio_price_stale', label: '组合价格状态' },
 ];
 
+const MARKET_ALERT_TYPE_OPTIONS = [
+  { value: 'market_light_status', label: '大盘红绿灯状态' },
+  { value: 'market_light_score_drop', label: '大盘红绿灯分数下降' },
+];
+
 const TARGET_SCOPE_OPTIONS = [
   { value: 'single_symbol', label: '单标的' },
   { value: 'watchlist', label: '自选股' },
   { value: 'portfolio_holdings', label: '持仓标的' },
   { value: 'portfolio_account', label: '持仓账户' },
+  { value: 'market', label: '大盘市场' },
 ];
 
 const SEVERITY_OPTIONS = [
@@ -68,6 +76,17 @@ const STOP_LOSS_MODE_OPTIONS = [
   { value: 'breach', label: '已触发止损' },
 ];
 
+const MARKET_REGION_OPTIONS = [
+  { value: 'cn', label: 'A 股（cn）' },
+  { value: 'hk', label: '港股（hk）' },
+  { value: 'us', label: '美股（us）' },
+];
+
+const MARKET_LIGHT_STATUS_OPTIONS: Array<{ value: MarketLightStatus; label: string }> = [
+  { value: 'red', label: '红灯' },
+  { value: 'yellow', label: '黄灯' },
+];
+
 const MAX_REQUESTED_DAYS = 365;
 
 interface AlertRuleFormProps {
@@ -80,10 +99,12 @@ function isPortfolioScope(scope: AlertTargetScope): boolean {
 }
 
 function defaultAlertTypeForScope(scope: AlertTargetScope): AlertType {
+  if (scope === 'market') return 'market_light_status';
   return scope === 'portfolio_account' ? 'portfolio_stop_loss' : 'price_cross';
 }
 
 function optionsForScope(scope: AlertTargetScope) {
+  if (scope === 'market') return MARKET_ALERT_TYPE_OPTIONS;
   return scope === 'portfolio_account' ? PORTFOLIO_ALERT_TYPE_OPTIONS : SYMBOL_ALERT_TYPE_OPTIONS;
 }
 
@@ -92,6 +113,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   const [targetScope, setTargetScope] = useState<AlertTargetScope>('single_symbol');
   const [target, setTarget] = useState('');
   const [portfolioTarget, setPortfolioTarget] = useState('all');
+  const [marketRegion, setMarketRegion] = useState<MarketRegion>('cn');
   const [accounts, setAccounts] = useState<PortfolioAccountItem[]>([]);
   const [accountsError, setAccountsError] = useState<string | null>(null);
   const [alertType, setAlertType] = useState<AlertType>('price_cross');
@@ -113,6 +135,8 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
   const [signalPeriod, setSignalPeriod] = useState('9');
   const [kPeriod, setKPeriod] = useState('3');
   const [dPeriod, setDPeriod] = useState('3');
+  const [marketLightStatuses, setMarketLightStatuses] = useState<MarketLightStatus[]>(['red', 'yellow']);
+  const [minDrop, setMinDrop] = useState('10');
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -175,7 +199,19 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
       setThreshold('');
     } else if (nextType === 'portfolio_stop_loss') {
       setStopLossMode('near');
+    } else if (nextType === 'market_light_status') {
+      setMarketLightStatuses(['red', 'yellow']);
+    } else if (nextType === 'market_light_score_drop') {
+      setMinDrop('10');
     }
+  };
+
+  const toggleMarketLightStatus = (status: MarketLightStatus) => {
+    setMarketLightStatuses((current) => (
+      current.includes(status)
+        ? current.filter((item) => item !== status)
+        : [...current, status]
+    ));
   };
 
   const parsePositiveNumber = (value: string, label: string): number | null => {
@@ -288,6 +324,18 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     if (alertType === 'portfolio_stop_loss') {
       return { mode: stopLossMode };
     }
+    if (alertType === 'market_light_status') {
+      if (marketLightStatuses.length === 0) {
+        setFormError('至少选择一个红绿灯状态');
+        return null;
+      }
+      return { statuses: marketLightStatuses };
+    }
+    if (alertType === 'market_light_score_drop') {
+      const parsedMinDrop = parsePositiveNumber(minDrop, 'Score 下降阈值');
+      if (parsedMinDrop == null) return null;
+      return { minDrop: parsedMinDrop };
+    }
     return {};
   };
 
@@ -297,6 +345,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     setTargetScope(nextScope);
     setAlertType(nextType);
     setPortfolioTarget('all');
+    setMarketRegion('cn');
     resetParameters(nextType);
     setFormError(null);
   };
@@ -313,6 +362,8 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
       resolvedTarget = targetValidation.normalized;
     } else if (targetScope === 'watchlist') {
       resolvedTarget = 'default';
+    } else if (targetScope === 'market') {
+      resolvedTarget = marketRegion;
     } else {
       resolvedTarget = portfolioTarget;
     }
@@ -334,6 +385,7 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     setName('');
     setTarget('');
     setPortfolioTarget('all');
+    setMarketRegion('cn');
     setPrice('');
     setChangePct('');
     setMultiplier('');
@@ -345,6 +397,8 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
     setSignalPeriod('9');
     setKPeriod('3');
     setDPeriod('3');
+    setMarketLightStatuses(['red', 'yellow']);
+    setMinDrop('10');
     resetParameters(alertType);
     setEnabled(true);
   };
@@ -368,6 +422,17 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
           value="default"
           onChange={() => undefined}
           disabled
+        />
+      );
+    }
+    if (targetScope === 'market') {
+      return (
+        <Select
+          label="市场区域"
+          value={marketRegion}
+          options={MARKET_REGION_OPTIONS}
+          disabled={isSubmitting}
+          onChange={(value) => setMarketRegion(value as MarketRegion)}
         />
       );
     }
@@ -653,6 +718,36 @@ export const AlertRuleForm: React.FC<AlertRuleFormProps> = ({ onSubmit, isSubmit
             options={STOP_LOSS_MODE_OPTIONS}
             disabled={isSubmitting}
             onChange={(value) => setStopLossMode(value as PortfolioStopLossMode)}
+          />
+        ) : null}
+
+        {alertType === 'market_light_status' ? (
+          <div className="space-y-2">
+            <div className="text-sm font-medium text-foreground">触发状态</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {MARKET_LIGHT_STATUS_OPTIONS.map((option) => (
+                <Checkbox
+                  key={option.value}
+                  label={option.label}
+                  checked={marketLightStatuses.includes(option.value)}
+                  disabled={isSubmitting}
+                  onChange={() => toggleMarketLightStatus(option.value)}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {alertType === 'market_light_score_drop' ? (
+          <Input
+            label="Score 下降阈值"
+            type="number"
+            min="0"
+            max="100"
+            step="1"
+            value={minDrop}
+            onChange={(event) => setMinDrop(event.target.value)}
+            disabled={isSubmitting}
           />
         ) : null}
 

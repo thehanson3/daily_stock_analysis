@@ -732,6 +732,22 @@ class TestBuildUserMessage(unittest.TestCase):
         self.assertIn("股票代码: 600519", msg)
         self.assertIn("报告类型: daily", msg)
 
+    def test_message_does_not_render_market_phase_context(self):
+        msg = self.executor._build_user_message(
+            "Analyze",
+            context={
+                "stock_code": "600519",
+                "market_phase_context": {
+                    "phase": "intraday",
+                    "is_partial_bar": True,
+                },
+            },
+        )
+        self.assertIn("股票代码: 600519", msg)
+        self.assertNotIn("market_phase_context", msg)
+        self.assertNotIn("is_partial_bar", msg)
+        self.assertNotIn("is_market_open_now", msg)
+
 
 # ============================================================
 # AgentResult dataclass

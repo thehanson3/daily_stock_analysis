@@ -318,6 +318,21 @@ class TestNotificationRouteFieldsRegistered(unittest.TestCase):
             self.assertIn(key, field_keys, f"{key} missing from schema response")
 
 
+class TestAgentEventAlertRulesJsonField(unittest.TestCase):
+    """Event Monitor legacy JSON config must advertise its P8 boundary."""
+
+    def test_description_marks_legacy_and_web_api_boundaries(self):
+        field = get_field_definition("AGENT_EVENT_ALERT_RULES_JSON")
+        description = field["description"]
+
+        self.assertIn("Legacy JSON supports only price_cross, price_change_percent, and volume_spike", description)
+        self.assertIn("Technical indicator", description)
+        self.assertIn("watchlist", description)
+        self.assertIn("portfolio", description)
+        self.assertIn("market light", description)
+        self.assertIn("Alert API/Web center", description)
+
+
 class TestNotificationNoiseFieldsRegistered(unittest.TestCase):
     """P4 notification noise-control keys must be visible in settings schema."""
 

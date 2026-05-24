@@ -249,6 +249,65 @@ def test_alerts_doc_defines_p6_portfolio_and_watchlist_scope() -> None:
         assert token in doc
 
 
+def test_alerts_doc_defines_p7_market_light_scope() -> None:
+    doc = _read_doc()
+
+    for token in (
+        "## P7 大盘红绿灯结构化告警",
+        "MarketLightSnapshot",
+        "`target_scope=market`",
+        "`market_light_status`",
+        "`market_light_score_drop`",
+        "`statuses=[\"red\",\"yellow\"]`",
+        "`min_drop > 0`",
+        "`cn` / `hk` / `us`",
+        "双向约束",
+        "`context_snapshot.market_light_snapshots`",
+        "`data_quality=unavailable`",
+        "`partial_comparison=true`",
+        "`missing_dimensions`",
+        "canonical scorer",
+        "thin wrapper",
+        "`load_previous_snapshot(region, before_trade_date)`",
+        "最大 `snapshot.trade_date`",
+        "旧交易日 backfill",
+        "`TRADING_DAY_CHECK_ENABLED`",
+        "`data_source=market_light`",
+        "legacy `AGENT_EVENT_ALERT_RULES_JSON` 不支持 market 规则",
+        "revert P7 PR",
+    ):
+        assert token in doc
+
+
+def test_alerts_doc_defines_p8_user_and_deployment_boundaries() -> None:
+    doc = _read_doc()
+
+    for token in (
+        "## P8 用户配置与部署边界",
+        "`AGENT_EVENT_MONITOR_ENABLED`",
+        "`AGENT_EVENT_MONITOR_INTERVAL_MINUTES`",
+        "`NOTIFICATION_ALERT_CHANNELS`",
+        "`route_type=alert`",
+        "Alert API / Web 告警中心持久化规则",
+        "legacy `AGENT_EVENT_ALERT_RULES_JSON`",
+        "只兼容 `single_symbol`",
+        "P5 技术指标、P6 watchlist/portfolio 或 P7 market light",
+        "docker/Dockerfile",
+        "`python main.py --schedule`",
+        "保留 `data/` 数据库卷",
+        ".github/workflows/00-daily-analysis.yml",
+        "一次性分析 workflow",
+        "不运行 `--schedule` 后台 alert worker",
+        "没有映射 `AGENT_EVENT_*`",
+        "`/alerts`",
+        "Desktop 不新增原生告警管理界面",
+        "`triggered`、`skipped`、`degraded`、`failed`",
+        "`rule_id + target + data_source + data_timestamp`",
+        "回滚 P8 只需 revert 文档、配置说明和 Web 文案改动",
+    ):
+        assert token in doc
+
+
 def test_changelog_mentions_alert_p6_release_note() -> None:
     changelog = (PROJECT_ROOT / "docs" / "CHANGELOG.md").read_text(encoding="utf-8")
 
@@ -256,6 +315,13 @@ def test_changelog_mentions_alert_p6_release_note() -> None:
     assert "自选股" in changelog
     assert "持仓" in changelog
     assert "账户联动规则" in changelog
+
+
+def test_changelog_mentions_alert_p8_docs_closeout() -> None:
+    changelog = (PROJECT_ROOT / "docs" / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    assert "[文档] 补齐告警中心 P8 文档与配置收口说明" in changelog
+    assert "GitHub Actions 与 Desktop 边界" in changelog
 
 
 def test_changelog_unreleased_keeps_flat_entries() -> None:

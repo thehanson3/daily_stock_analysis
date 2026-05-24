@@ -42,6 +42,8 @@ function toSnakeRulePayload(payload: AlertRuleCreateRequest): Record<string, unk
       k_period: payload.parameters.kPeriod,
       d_period: payload.parameters.dPeriod,
       mode: payload.parameters.mode,
+      statuses: payload.parameters.statuses,
+      min_drop: payload.parameters.minDrop,
     });
   }
   return request;

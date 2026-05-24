@@ -162,6 +162,77 @@ describe('alertsApi', () => {
     });
   });
 
+  it('creates market light rules with market scope and min_drop parameter fields', async () => {
+    post
+      .mockResolvedValueOnce({
+        data: {
+          id: 6,
+          name: 'market status',
+          target_scope: 'market',
+          target: 'cn',
+          alert_type: 'market_light_status',
+          parameters: { statuses: ['red', 'yellow'] },
+          severity: 'critical',
+          enabled: true,
+          source: 'api',
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          id: 7,
+          name: 'market score drop',
+          target_scope: 'market',
+          target: 'us',
+          alert_type: 'market_light_score_drop',
+          parameters: { min_drop: 12 },
+          severity: 'warning',
+          enabled: true,
+          source: 'api',
+        },
+      });
+
+    const statusRule = await alertsApi.createRule({
+      name: 'market status',
+      targetScope: 'market',
+      target: 'cn',
+      alertType: 'market_light_status',
+      parameters: { statuses: ['red', 'yellow'] },
+      severity: 'critical',
+      enabled: true,
+    });
+    const scoreDropRule = await alertsApi.createRule({
+      name: 'market score drop',
+      targetScope: 'market',
+      target: 'us',
+      alertType: 'market_light_score_drop',
+      parameters: { minDrop: 12 },
+      severity: 'warning',
+      enabled: true,
+    });
+
+    expect(post).toHaveBeenNthCalledWith(1, '/api/v1/alerts/rules', {
+      name: 'market status',
+      target_scope: 'market',
+      target: 'cn',
+      alert_type: 'market_light_status',
+      parameters: { statuses: ['red', 'yellow'] },
+      severity: 'critical',
+      enabled: true,
+    });
+    expect(post).toHaveBeenNthCalledWith(2, '/api/v1/alerts/rules', {
+      name: 'market score drop',
+      target_scope: 'market',
+      target: 'us',
+      alert_type: 'market_light_score_drop',
+      parameters: { min_drop: 12 },
+      severity: 'warning',
+      enabled: true,
+    });
+    expect(statusRule.targetScope).toBe('market');
+    expect(statusRule.parameters.statuses).toEqual(['red', 'yellow']);
+    expect(scoreDropRule.parameters.minDrop).toBe(12);
+  });
+
   it('creates portfolio alert rules and maps batch dry-run fields', async () => {
     post
       .mockResolvedValueOnce({

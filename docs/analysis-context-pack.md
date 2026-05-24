@@ -1,0 +1,122 @@
+# AnalysisContextPack P0：分析上下文盘点与字段边界
+
+本页是 Issue #1389 的 P0 盘点文档，用于记录当前 DSA 分析上下文的真实来源、消费路径、字段状态边界和后续 `AnalysisContextPack` 的首版范围。P0 只做现状盘点和契约边界，不新增 schema、builder 或 runtime 接入。
+
+## 术语与边界
+
+当前仓库里有多种名为 context / snapshot 的数据面，P0 必须先消歧，避免把现有运行时结构误写成未来 pack。
+
+| 术语 | 当前含义 | 当前主要消费方 | P0 边界 |
+| --- | --- | --- | --- |
+| `storage.get_analysis_context()` | `src/storage.py` 中从数据库最近两天 OHLCV 生成的技术面简上下文，包含 `today`、`yesterday`、`volume_change_ratio`、`price_change_ratio`、`ma_status` 等。当前实现接收 `target_date`，但实际仍取最新两天数据。 | 普通分析主链路、Agent 工具 `get_analysis_context` | 记录为历史技术面输入来源，不把它直接等同于未来 pack。 |
+| `enhanced_context` | 普通分析中由 `src/core/pipeline.py` 基于 DB 简上下文、实时行情、筹码、趋势、基本面和语言信息增强后的 prompt 上下文。 | `src/analyzer.py` prompt 渲染、`_build_context_snapshot()` | 记录当前 prompt 输入面；P0 不改变字段名或结构。 |
+| `analysis_history.context_snapshot` | 分析完成后写入历史表的持久化快照。普通分析通常包含 `enhanced_context`、`news_content`、`realtime_quote_raw`、`chip_distribution_raw`；Agent 路径保存 `initial_context`。 | 历史详情、同步 analysis/status 响应、回测、部分基本面 fallback 展示 | 记录为持久化消费面；必须保留 `context_snapshot.enhanced_context.date` 兼容。 |
+| Agent executor message context | `AgentExecutor._build_user_message()` 注入首轮用户消息的上下文，适用于 `AGENT_ARCH=single` 路径，目前包含股票代码、报告类型、输出语言、`realtime_quote`、`chip_distribution`、`news_context`。 | 单 Agent 首轮 LLM 消息 | 记录当前首轮可见字段；P0 不补 runtime 注入。 |
+| Agent orchestrator `AgentContext` | `AgentOrchestrator._build_context()` 写入多 Agent 共享上下文，适用于 `AGENT_ARCH=multi` 路径，可预注入 `realtime_quote`、`daily_history`、`chip_distribution`、`trend_result`、`news_context`。 | Technical / Intel / Risk / Decision 多 Agent 链路 | 记录为 orchestrator 内部共享数据面；不预注入 `fundamental_context`，`trend_result` 是否存在取决于 caller 是否传入。 |
+
+## P0 范围与非目标
+
+P0 的目标是让后续 P1/P2/P3 可以基于真实仓库边界设计 `AnalysisContextPack`，而不是提前改造运行时。
+
+- P0 覆盖普通分析、Agent、告警、持仓、回测、历史、通知七条路径的上下文盘点。
+- P0 固定字段质量状态词，但不定义 `AnalysisContextPack` schema。
+- P0 不新增 builder，不新增配置项，不新增数据库字段，不改变 API、报告、历史或通知 payload。
+- P0 不接入 runtime，不改 `src/` 分析、Agent、告警、持仓、回测或通知逻辑。
+- P0 不 pack 化 `market_review`、`market_light` 或大盘红绿灯专题快照；这些只作为历史快照中的其他 `report_kind` / 专题消费边界记录。
+- P0 不把 `fetch_failed` 加入字段质量状态词；`fetch_failed` 与 `not_supported` 的细分留到 P5 数据质量评分与模型提示阶段。
+- P0 不在 README 扩写实现细节；本页作为专题文档，由 `docs/INDEX.md` / `docs/INDEX_EN.md` 入口发现。
+
+## 字段质量状态
+
+未来 pack 的字段质量状态在 P0 只固定下列七词。它们描述字段或数据块的质量，不描述业务流程是否成功。
+
+| 状态 | 含义 | 示例边界 |
+| --- | --- | --- |
+| `available` | 字段存在，来源和时间戳可解释，当前路径可正常使用。 | 实时行情返回价格和来源；历史 K 线窗口满足计算需求。 |
+| `missing` | 当前路径需要该字段，但实际未取到或为空。 | DB 无最近日线，普通分析进入 `data_missing` 结果。 |
+| `not_supported` | 当前市场、数据源或路径不支持该字段，不应误报为错误。 | 某些市场无筹码分布或资金流。 |
+| `fallback` | 首选来源不可用，使用了备用来源或旧路径。 | 持仓价格从实时行情 fallback 到历史收盘价。 |
+| `stale` | 字段存在，但时间新鲜度不足。 | 持仓估值中的 `price_stale` / `fx_stale`。 |
+| `estimated` | 字段是估算值，不应当作完整事实。 | 盘中用实时价补今日 bar 后生成技术估计。 |
+| `partial` | 数据块部分可用、部分缺失。 | 大盘红绿灯 `data_quality=partial` 或工具返回 `partial_cache`。 |
+
+## 现有状态映射
+
+当前仓库已有不少状态词。P0 只建立映射或不映射关系，避免后续把业务结果状态混入字段质量枚举。
+
+| 现有词或字段 | 当前位置 | 建议关系 | 说明 |
+| --- | --- | --- | --- |
+| `data_missing` | 普通分析缺历史数据结果 | 可映射到 `missing` | 这是核心输入缺失，不是业务成功状态。 |
+| `cache_hit` / `partial_cache` | Agent 历史数据工具 | `partial_cache` 可映射到 `partial` | `cache_hit` 是来源/缓存元数据，不是质量状态。 |
+| `source` / `data_source` / `realtime_source` | 数据源、告警、上下文快照 | 不映射 | 这些是来源元数据，应与字段质量状态并列保存。 |
+| `price_source=missing` | 持仓快照 | 可映射到 `missing` | 表示估值价格不可用。 |
+| `price_stale` / `fx_stale` | 持仓快照 | 可映射到 `stale` | 保留原字段作为业务元数据。 |
+| `triggered` / `skipped` / `degraded` / `failed` | 告警评估与记录 | 不映射 | 这是规则评估或记录结果，不是字段级质量状态。 |
+| `insufficient_data` / `completed` / `error` | 回测服务 | 不映射 | 这是回测执行状态；可在 pack 摘要中解释触发原因。 |
+| `sent` / `no_channel` / `partial_failed` / `all_failed` | 通知发送 | 不映射 | 这是通知投递结果，不能反推分析输入质量。 |
+| `data_quality=ok/partial/unavailable` | 大盘红绿灯 | `partial` 可映射，`unavailable` 视字段场景映射到 `missing` 或 `not_supported` | P0 不把大盘红绿灯纳入首版单股 pack。 |
+| `fetch_failed` | 未来数据质量细分 | P0 不扩展 | P5 再区分 `not_supported` 与 `fetch_failed`。 |
+
+## 七路径盘点
+
+### 普通分析
+
+普通分析主链路在 `src/core/pipeline.py` 中组装输入：先读取 `storage.get_analysis_context()`，再按可用性补充实时行情、筹码、趋势分析、新闻、基本面和报告语言，最后交给 `src/analyzer.py` 渲染 prompt。当前重复点主要是实时字段同时存在于 `enhanced_context.realtime`、`realtime_quote_raw` 和报告 meta；命名上存在 `source`、`data_source`、`realtime_source` 等多种来源字段。
+
+首版 pack 可从普通分析路径抽取单股核心身份、行情、日线、技术、新闻、基本面和数据质量摘要；P0 不改变 `_enhance_context()`、`_build_context_snapshot()` 或 analyzer prompt。
+
+### Agent
+
+Agent 有三层需要分开记录的数据面。`src/core/pipeline.py` 的 Agent 路径会构造 `initial_context`，固定包含 `fundamental_context`，并在可用时加入 `trend_result`，最终作为 Agent 路径的 `context_snapshot` 持久化。`AgentExecutor._build_user_message()` 只适用于 `AGENT_ARCH=single`，首轮消息只显式注入 `realtime_quote`、`chip_distribution`、`news_context` 等已取上下文，不显式注入 `fundamental_context` 或 `trend_result`。`AgentOrchestrator._build_context()` 适用于 `AGENT_ARCH=multi`，可预注入 `realtime_quote`、`daily_history`、`chip_distribution`、`trend_result`、`news_context`，这些进入 `AgentContext` 的字段会作为 pre-fetched data 注入 stage agent 消息；但 orchestrator 不预注入 `fundamental_context`。`trend_result` 不是天然存在，取决于 caller 是否传入。
+
+Agent 工具还会独立调用 `get_realtime_quote`、`get_daily_history`、`get_chip_distribution`、`get_analysis_context`、`get_stock_info` 等工具，容易与普通分析前置获取产生重复请求。P0 只记录这些重复和命名差异，P3 再决定如何让 Agent 复用 pack。
+
+### 告警
+
+告警链路在 `src/services/alert_worker.py` 中评估规则、记录触发历史并分发通知，具体字段语义见 [实时告警中心](alerts.md)。告警状态如 `triggered`、`skipped`、`degraded`、`failed` 是规则评估或记录状态，不能直接写入字段质量枚举。
+
+首版 pack 不把告警规则评估作为输入数据块；告警后续只消费 pack 的字段质量摘要，例如核心行情是否 fallback、是否 stale、是否 partial。
+
+### 持仓
+
+持仓快照在 `src/services/portfolio_service.py` 中聚合账户、仓位、成本、价格、汇率和风险输入，API 输出结构在 `api/v1/schemas/portfolio.py`。当前已有 `price_source`、`price_provider`、`price_date`、`price_stale`、`price_available`、`fx_stale` 等字段。
+
+首版 pack 可记录“是否持仓、账户摘要、成本、数量、仓位、浮盈浮亏、价格/汇率 stale 摘要”，但不纳入交易流水、现金流水、公司行动或完整账户隐私数据。
+
+### 回测
+
+回测服务在 `src/services/backtest_service.py` 和 `src/repositories/backtest_repo.py` 中消费历史分析记录与日线数据。现有 `parse_analysis_date_from_snapshot()` 依赖 `analysis_history.context_snapshot.enhanced_context.date` 解析分析日期。
+
+P0 必须把 `enhanced_context.date` 标为兼容边界。后续 pack 可以新增更清晰的日期字段，但不能无迁移地删除或改名当前历史快照中的日期位置。
+
+### 历史
+
+历史详情在 `src/services/history_service.py`、`api/v1/endpoints/history.py`、`api/v1/schemas/history.py` 中返回 `raw_result`、`news_content`、`context_snapshot` 等字段。同步 analysis/status 响应也会在 `api/v1/endpoints/analysis.py` 中读取 `context_snapshot.enhanced_context`、`realtime_quote_raw` 和基本面 fallback。
+
+P0 只记录历史消费面。完整 pack 不应默认公开到历史详情或公共 API；后续 P4 如需展示，应优先暴露摘要、来源和降级说明。
+
+### 通知
+
+通知链路在 `src/notification.py` 中消费 `AnalysisResult`、dashboard、market snapshot、data_sources 等输出，并记录 `sent`、`no_channel`、`partial_failed`、`all_failed` 等投递状态；渠道配置与边界见 [通知能力基线](notifications.md)。
+
+通知不是事实数据层，不能把投递失败误写成输入质量失败。后续只应在必要时消费 pack 摘要，例如“实时行情已降级”“基本面缺失”“新闻源不足”。
+
+## 源码锚点
+
+| 域 | 锚点 |
+| --- | --- |
+| 普通分析 | `src/core/pipeline.py`, `src/storage.py`, `src/analyzer.py` |
+| Agent | `src/agent/orchestrator.py`, `src/agent/executor.py`, `src/agent/tools/data_tools.py` |
+| 告警 | `src/services/alert_worker.py`, `docs/alerts.md` |
+| 持仓 | `src/services/portfolio_service.py`, `api/v1/schemas/portfolio.py` |
+| 回测 | `src/services/backtest_service.py`, `src/repositories/backtest_repo.py` |
+| 历史 | `src/services/history_service.py`, `api/v1/endpoints/history.py`, `api/v1/endpoints/analysis.py`, `api/v1/schemas/history.py` |
+| 通知 | `src/notification.py`, `docs/notifications.md` |
+
+## 兼容与安全边界
+
+- `analysis_history.context_snapshot.enhanced_context.date` 是当前回测日期解析兼容点，P1/P2 不能在没有迁移的情况下破坏。
+- 完整 pack 不默认公开到历史、API、Web 或通知；公共面优先展示摘要、来源、fallback、stale、missing count 等低敏信息。
+- pack、日志、历史快照和 API 响应不得记录 API key、token、cookie、完整 webhook URL、邮箱密码、私有环境变量或其他密钥。
+- `source`、`timestamp`、`fallback`、`stale`、`partial` 等质量元数据只用于解释输入限制，不用于阻断分析；除非现有核心路径本来就是 fail-fast。
+- #1386 的盘前 / 盘中 phase 感知是后续 `phase` / `data_quality` 字段的重要背景；P0 只记录关系，不接入 runtime。

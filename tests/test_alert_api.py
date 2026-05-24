@@ -482,6 +482,99 @@ class AlertApiTestCase(unittest.TestCase):
         )
         self.assertEqual(missing_target.status_code, 422)
 
+    def test_market_alert_scope_type_matrix_and_target_normalization(self) -> None:
+        created = self._create_rule({
+            "name": "Market red/yellow",
+            "target_scope": "market",
+            "target": " CN ",
+            "alert_type": "market_light_status",
+            "parameters": {"statuses": ["red", "yellow"]},
+        })
+        self.assertEqual(created["target"], "cn")
+        self.assertEqual(created["parameters"], {"statuses": ["red", "yellow"]})
+
+        invalid_symbol_rule = self.client.post(
+            "/api/v1/alerts/rules",
+            json={
+                "target_scope": "market",
+                "target": "cn",
+                "alert_type": "price_cross",
+                "parameters": {"direction": "above", "price": 10},
+            },
+        )
+        self.assertEqual(invalid_symbol_rule.status_code, 400, invalid_symbol_rule.text)
+        self.assertEqual(invalid_symbol_rule.json()["error"], "validation_error")
+
+        invalid_market_rule = self.client.post(
+            "/api/v1/alerts/rules",
+            json={
+                "target_scope": "single_symbol",
+                "target": "600519",
+                "alert_type": "market_light_status",
+                "parameters": {"statuses": ["red"]},
+            },
+        )
+        self.assertEqual(invalid_market_rule.status_code, 400, invalid_market_rule.text)
+        self.assertEqual(invalid_market_rule.json()["error"], "validation_error")
+
+        invalid_target = self.client.post(
+            "/api/v1/alerts/rules",
+            json={
+                "target_scope": "market",
+                "target": "eu",
+                "alert_type": "market_light_score_drop",
+                "parameters": {"min_drop": 10},
+            },
+        )
+        self.assertEqual(invalid_target.status_code, 400, invalid_target.text)
+        self.assertEqual(invalid_target.json()["error"], "validation_error")
+
+    def test_dry_run_market_light_rule_uses_snapshot_and_does_not_write_history(self) -> None:
+        rule = self._create_rule({
+            "name": "Market risk-off",
+            "target_scope": "market",
+            "target": "cn",
+            "alert_type": "market_light_status",
+            "parameters": {"statuses": ["red", "yellow"]},
+        })
+        snapshot = {
+            "region": "cn",
+            "trade_date": "2026-03-07",
+            "status": "red",
+            "score": 35,
+            "label": "偏防守",
+            "temperature_label": "偏弱",
+            "reasons": ["test"],
+            "guidance": "test",
+            "dimensions": {
+                "breadth": {"score": 20, "available": True},
+                "index": {"score": 30, "available": True},
+                "limit": {"score": 10, "available": True},
+            },
+            "data_quality": "ok",
+        }
+
+        with patch("src.services.market_light_alerts.get_open_markets_today", return_value={"cn"}), patch(
+            "src.services.market_light_alerts.build_current_snapshot", return_value=snapshot
+        ) as build_snapshot:
+            resp = self.client.post(f"/api/v1/alerts/rules/{rule['id']}/test")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        payload = resp.json()
+        self.assertEqual(payload["target_scope"], "market")
+        self.assertTrue(payload["triggered"])
+        self.assertEqual(payload["status"], "triggered")
+        self.assertEqual(payload["observed_value"], 35.0)
+        self.assertEqual(payload["evaluated_count"], 1)
+        self.assertEqual(payload["triggered_count"], 1)
+        self.assertEqual(payload["target_results"][0]["target"], "cn")
+        self.assertEqual(payload["target_results"][0]["display_target"], "A股大盘")
+        self.assertEqual(payload["target_results"][0]["observed_value"], 35.0)
+        build_snapshot.assert_called_once_with("cn")
+
+        self.assertEqual(self.client.get("/api/v1/alerts/triggers").json()["total"], 0)
+        self.assertEqual(self.client.get("/api/v1/alerts/notifications").json()["total"], 0)
+
     def test_dry_run_price_cross_uses_mocked_quote_and_does_not_write_history(self) -> None:
         rule = self._create_rule()
 

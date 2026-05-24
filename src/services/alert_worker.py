@@ -119,7 +119,7 @@ class AlertWorker:
             return stats
 
         monitor = EventMonitor()
-        daily_cache: Dict[tuple[str, int], Any] = {}
+        daily_cache: Dict[Any, Any] = {}
         for runtime_rule in runtime_rules:
             stats["evaluated"] += 1
             try:

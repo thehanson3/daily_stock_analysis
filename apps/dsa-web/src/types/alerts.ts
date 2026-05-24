@@ -10,11 +10,15 @@ export type AlertType =
   | 'portfolio_stop_loss'
   | 'portfolio_concentration'
   | 'portfolio_drawdown'
-  | 'portfolio_price_stale';
+  | 'portfolio_price_stale'
+  | 'market_light_status'
+  | 'market_light_score_drop';
 export type AlertSeverity = 'info' | 'warning' | 'critical';
-export type AlertTargetScope = 'single_symbol' | 'watchlist' | 'portfolio_holdings' | 'portfolio_account';
+export type AlertTargetScope = 'single_symbol' | 'watchlist' | 'portfolio_holdings' | 'portfolio_account' | 'market';
 export type AlertDirection = 'above' | 'below' | 'up' | 'down' | 'bullish_cross' | 'bearish_cross';
 export type PortfolioStopLossMode = 'near' | 'breach';
+export type MarketRegion = 'cn' | 'hk' | 'us';
+export type MarketLightStatus = 'yellow' | 'red';
 export type AlertDryRunStatus = 'triggered' | 'not_triggered' | 'evaluation_error';
 export type AlertTriggerStatus = 'triggered' | 'skipped' | 'degraded' | 'failed';
 
@@ -32,6 +36,8 @@ export interface AlertRuleParameters {
   kPeriod?: number;
   dPeriod?: number;
   mode?: PortfolioStopLossMode;
+  statuses?: MarketLightStatus[];
+  minDrop?: number;
 }
 
 export interface AlertRuleItem {

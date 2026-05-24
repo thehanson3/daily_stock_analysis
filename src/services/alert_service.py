@@ -47,6 +47,15 @@ from src.services.portfolio_alerts import (
     portfolio_effective_target,
     result_to_target_result,
 )
+from src.services.market_light_alerts import (
+    MARKET_ALERT_TYPES,
+    MARKET_LIGHT_DATA_SOURCE,
+    MarketLightAlert,
+    evaluate_market_light_alert,
+    make_market_light_payload,
+    normalize_market_alert_parameters,
+)
+from src.services.market_light_service import normalize_market_region
 from src.storage import (
     AlertCooldownRecord,
     AlertNotificationRecord,
@@ -59,8 +68,8 @@ from src.utils.sanitize import sanitize_diagnostic_text
 
 LEGACY_RUNTIME_ALERT_TYPES = frozenset({"price_cross", "price_change_percent", "volume_spike"})
 SYMBOL_ALERT_TYPES = LEGACY_RUNTIME_ALERT_TYPES | TECHNICAL_ALERT_TYPES
-SUPPORTED_ALERT_TYPES = SYMBOL_ALERT_TYPES | PORTFOLIO_ALERT_TYPES
-SUPPORTED_TARGET_SCOPES = frozenset({"single_symbol", "watchlist", "portfolio_holdings", "portfolio_account"})
+SUPPORTED_ALERT_TYPES = SYMBOL_ALERT_TYPES | PORTFOLIO_ALERT_TYPES | MARKET_ALERT_TYPES
+SUPPORTED_TARGET_SCOPES = frozenset({"single_symbol", "watchlist", "portfolio_holdings", "portfolio_account", "market"})
 SUPPORTED_SEVERITIES = frozenset({"info", "warning", "critical"})
 NULLABLE_RULE_UPDATE_FIELDS = frozenset({"cooldown_policy", "notification_policy"})
 
@@ -192,7 +201,7 @@ class AlertService:
         self,
         rule,
         monitor: EventMonitor,
-        daily_cache: Optional[Dict[tuple[str, int], Any]] = None,
+        daily_cache: Optional[Dict[Any, Any]] = None,
     ) -> Dict[str, Any]:
         if isinstance(rule, PriceAlert):
             return await self._evaluate_price(rule, monitor)
@@ -204,6 +213,8 @@ class AlertService:
             return await self._evaluate_technical_indicator(rule, daily_cache=daily_cache)
         if isinstance(rule, PortfolioRiskAlert):
             return await asyncio.to_thread(evaluate_portfolio_risk_alert, rule)
+        if isinstance(rule, MarketLightAlert):
+            return await asyncio.to_thread(evaluate_market_light_alert, rule, cache=daily_cache)
         if isinstance(rule, StaticAlertEvaluation):
             return evaluate_static_alert(rule)
         return self._evaluation_error(rule, f"unsupported runtime alert type: {rule.alert_type}")
@@ -214,7 +225,7 @@ class AlertService:
         monitor: EventMonitor,
     ) -> List[Dict[str, Any]]:
         semaphore = asyncio.Semaphore(8)
-        daily_cache: Dict[tuple[str, int], Any] = {}
+        daily_cache: Dict[Any, Any] = {}
 
         async def _evaluate_one(payload: RuntimeAlertPayload) -> Dict[str, Any]:
             async with semaphore:
@@ -680,6 +691,10 @@ class AlertService:
             return threshold_for_indicator(rule.alert_type, rule.indicator_params)
         if isinstance(rule, PortfolioRiskAlert):
             return None
+        if isinstance(rule, MarketLightAlert):
+            if rule.alert_type == "market_light_score_drop":
+                return float(rule.parameters.get("min_drop", 0) or 0)
+            return None
         return None
 
     @staticmethod
@@ -692,6 +707,8 @@ class AlertService:
             return "daily_data"
         if isinstance(rule, PortfolioRiskAlert):
             return "portfolio_risk"
+        if isinstance(rule, MarketLightAlert):
+            return MARKET_LIGHT_DATA_SOURCE
         return None
 
     @classmethod
@@ -895,6 +912,12 @@ class AlertService:
 
     @staticmethod
     def _validate_scope_alert_type(target_scope: str, alert_type: str) -> None:
+        if target_scope == "market":
+            if alert_type not in MARKET_ALERT_TYPES:
+                raise AlertServiceError("market target_scope only supports market alert types")
+            return
+        if alert_type in MARKET_ALERT_TYPES:
+            raise AlertServiceError("market alert types require target_scope=market")
         if target_scope == "portfolio_account":
             if alert_type not in PORTFOLIO_ALERT_TYPES:
                 raise AlertServiceError("portfolio_account only supports portfolio alert types")
@@ -907,6 +930,11 @@ class AlertService:
     def _normalize_target(self, target_scope: str, target: str) -> str:
         if target_scope == "single_symbol":
             return target.strip()
+        if target_scope == "market":
+            try:
+                return normalize_market_region(target)
+            except ValueError as exc:
+                raise AlertServiceError(str(exc)) from exc
         try:
             normalized = normalize_batch_target_scope_target(target_scope, target)
             if target_scope in {"portfolio_holdings", "portfolio_account"}:
@@ -949,6 +977,12 @@ class AlertService:
             except ValueError as exc:
                 raise AlertServiceError(str(exc)) from exc
 
+        if alert_type in MARKET_ALERT_TYPES:
+            try:
+                return normalize_market_alert_parameters(alert_type, parameters)
+            except ValueError as exc:
+                raise AlertServiceError(str(exc)) from exc
+
         raise UnsupportedAlertTypeError(f"unsupported alert_type for Alert API: {alert_type}")
 
     @staticmethod
@@ -978,6 +1012,9 @@ class AlertService:
 
         if data["alert_type"] in PORTFOLIO_ALERT_TYPES:
             return [make_portfolio_risk_payload(parent_key=parent_key, data=data)]
+
+        if data["alert_type"] in MARKET_ALERT_TYPES:
+            return [make_market_light_payload(parent_key=parent_key, data=data, config=config)]
 
         if data["target_scope"] in SYMBOL_BATCH_TARGET_SCOPES:
             if config is None:
@@ -1222,6 +1259,11 @@ class AlertService:
             return f"{target} portfolio drawdown"
         if alert_type == "portfolio_price_stale":
             return f"{target} portfolio stale price"
+        if alert_type == "market_light_status":
+            statuses = ",".join(parameters.get("statuses") or ["red", "yellow"])
+            return f"{target} market light status {statuses}"
+        if alert_type == "market_light_score_drop":
+            return f"{target} market light score drop {parameters['min_drop']}"
         return f"{target} {alert_type}"
 
     @staticmethod

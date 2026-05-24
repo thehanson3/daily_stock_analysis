@@ -34,6 +34,8 @@ const ALERT_TYPE_FILTER_OPTIONS = [
   { value: 'portfolio_concentration', label: '组合集中度' },
   { value: 'portfolio_drawdown', label: '组合回撤' },
   { value: 'portfolio_price_stale', label: '组合价格状态' },
+  { value: 'market_light_status', label: '大盘红绿灯状态' },
+  { value: 'market_light_score_drop', label: '大盘红绿灯分数下降' },
 ];
 
 const typeLabel: Record<AlertType, string> = {
@@ -49,6 +51,8 @@ const typeLabel: Record<AlertType, string> = {
   portfolio_concentration: '组合集中度',
   portfolio_drawdown: '组合回撤',
   portfolio_price_stale: '组合价格状态',
+  market_light_status: '大盘红绿灯状态',
+  market_light_score_drop: '大盘红绿灯分数下降',
 };
 
 const severityLabel: Record<string, string> = {
@@ -62,9 +66,30 @@ const scopeLabel: Record<string, string> = {
   watchlist: '自选股',
   portfolio_holdings: '持仓标的',
   portfolio_account: '持仓账户',
+  market: '大盘市场',
+};
+
+const marketRegionLabel: Record<string, string> = {
+  cn: 'A 股',
+  hk: '港股',
+  us: '美股',
+};
+
+const marketLightStatusLabel: Record<string, string> = {
+  yellow: '黄灯',
+  red: '红灯',
 };
 
 function formatParameters(rule: AlertRuleItem): string {
+  if (rule.alertType === 'market_light_status') {
+    const statuses = rule.parameters.statuses ?? [];
+    return statuses.length > 0
+      ? statuses.map((status) => marketLightStatusLabel[status] ?? status).join(' / ')
+      : '--';
+  }
+  if (rule.alertType === 'market_light_score_drop') {
+    return `Score 下降 >= ${rule.parameters.minDrop ?? '--'}`;
+  }
   if (rule.alertType === 'price_cross') {
     return `${rule.parameters.direction === 'below' ? '下破' : '上破'} ${rule.parameters.price ?? '--'}`;
   }
@@ -101,6 +126,7 @@ function isCoolingDown(rule: AlertRuleItem): boolean {
 }
 
 function formatTarget(rule: AlertRuleItem): string {
+  if (rule.targetScope === 'market') return marketRegionLabel[rule.target] ?? rule.target;
   if (rule.targetScope === 'watchlist') return 'default';
   if (rule.targetScope === 'portfolio_account' || rule.targetScope === 'portfolio_holdings') {
     return rule.target === 'all' ? '全部账户' : `账户 ${rule.target}`;

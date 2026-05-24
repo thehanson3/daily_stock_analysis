@@ -556,6 +556,49 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(report.details.belong_boards, [])
         self.assertIsNone(report.details.sector_rankings)
 
+    def test_history_detail_reads_agent_snapshot_related_boards_shape(self) -> None:
+        """Agent-mode snapshots store fundamental_context/realtime_quote at the top level."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        context_snapshot = {
+            "fundamental_context": {
+                "belong_boards": [{"name": "白酒", "type": "行业"}],
+                "boards": {
+                    "data": {
+                        "top": [{"name": "白酒", "change_pct": 2.8}],
+                        "bottom": [],
+                    }
+                },
+            },
+            "realtime_quote": {
+                "price": 1888.0,
+                "change_pct": 1.56,
+            },
+        }
+        query_id = "query_agent_snapshot_boards_001"
+        saved = self.db.save_analysis_history(
+            result=self._build_result(),
+            query_id=query_id,
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=context_snapshot,
+            save_snapshot=True,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertEqual(report.meta.current_price, 1888.0)
+        self.assertEqual(report.meta.change_pct, 1.56)
+        self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
+        self.assertEqual(report.details.sector_rankings["top"][0]["name"], "白酒")
+
     def test_history_markdown_localizes_english_report_and_placeholder_name(self) -> None:
         """History markdown should preserve report_language for English reports."""
         result = AnalysisResult(
