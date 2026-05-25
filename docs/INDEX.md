@@ -42,7 +42,7 @@
 | [Bot 命令与接入](bot-command.md) | Bot 命令、Webhook、平台接入和回调说明 |
 | [Bot 平台配置](bot/) | 飞书、钉钉、Discord 等 Bot 配置截图和补充说明 |
 | [实时告警中心](alerts.md) | EventMonitor 基线、Web 规则管理、通知结果、冷却状态和 Phase 边界 |
-| [分析上下文包 P0 盘点](analysis-context-pack.md) | AnalysisContextPack 首版范围、上下文字段边界、字段质量状态和源码锚点 |
+| [分析上下文包 P0/P1 契约](analysis-context-pack.md) | AnalysisContextPack 首版范围、上下文字段边界、字段质量状态、P1 内部 schema 和源码锚点 |
 | [图片识别 Prompt](image-extract-prompt.md) | 图片识别股票信息的 Prompt 与使用边界 |
 | [OpenClaw Skill 集成](openclaw-skill-integration.md) | OpenClaw / Skill 外部集成说明 |
 

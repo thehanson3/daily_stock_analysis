@@ -333,6 +333,35 @@ class TestAgentEventAlertRulesJsonField(unittest.TestCase):
         self.assertIn("Alert API/Web center", description)
 
 
+class TestAgentContextCompressionFields(unittest.TestCase):
+    """Visible chat context compression config must be exposed consistently."""
+
+    def test_profile_uses_chinese_labels_and_enum(self):
+        field = get_field_definition("AGENT_CONTEXT_COMPRESSION_PROFILE")
+
+        self.assertEqual(field["category"], "agent")
+        self.assertEqual(field["ui_control"], "select")
+        self.assertEqual(
+            field["validation"]["enum"],
+            ["cost", "balanced", "long_context_raw_first"],
+        )
+        self.assertEqual(
+            [option["label"] for option in field["options"]],
+            ["成本优先", "均衡推荐", "长上下文原文优先"],
+        )
+
+    def test_trigger_and_protected_turns_can_follow_profile_preset(self):
+        trigger = get_field_definition("AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS")
+        protected = get_field_definition("AGENT_CONTEXT_PROTECTED_TURNS")
+
+        self.assertEqual(trigger["default_value"], "")
+        self.assertEqual(protected["default_value"], "")
+        self.assertFalse(trigger["is_required"])
+        self.assertFalse(protected["is_required"])
+        self.assertIn("Leave empty", trigger["description"])
+        self.assertIn("Leave empty", protected["description"])
+
+
 class TestNotificationNoiseFieldsRegistered(unittest.TestCase):
     """P4 notification noise-control keys must be visible in settings schema."""
 

@@ -87,6 +87,44 @@ SAMPLE_DASHBOARD = {
 class TestAgentExecutor(unittest.TestCase):
     """Test the ReAct loop logic."""
 
+    def test_chat_injects_compressed_history_before_report_context_and_current_user(self):
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter._config = MagicMock()
+        executor = AgentExecutor(registry, adapter, max_steps=2)
+        captured = {}
+
+        def fake_run_loop(messages, tool_decls, parse_dashboard, progress_callback=None):
+            captured["messages"] = messages
+            return AgentResult(success=True, content="assistant reply")
+
+        compressed_history = [
+            {"role": "user", "content": "[系统生成的历史对话摘要，仅供延续本会话]\n旧摘要"},
+            {"role": "assistant", "content": "最近回复"},
+        ]
+
+        with patch.object(executor, "_run_loop", side_effect=fake_run_loop):
+            with patch("src.agent.executor.build_visible_chat_history", return_value=compressed_history):
+                with patch("src.agent.conversation.conversation_manager.get_or_create"):
+                    with patch("src.agent.conversation.conversation_manager.add_message"):
+                        executor.chat(
+                            "当前问题",
+                            "session-1",
+                            context={
+                                "stock_code": "600519",
+                                "stock_name": "贵州茅台",
+                                "previous_price": 1800,
+                            },
+                        )
+
+        messages = captured["messages"]
+        assert messages[0]["role"] == "system"
+        assert messages[1:3] == compressed_history
+        assert messages[3]["role"] == "user"
+        assert messages[3]["content"].startswith("[系统提供的历史分析上下文，可供参考对比]")
+        assert messages[4]["role"] == "assistant"
+        assert messages[-1] == {"role": "user", "content": "当前问题"}
+
     def test_prompt_omits_hardcoded_trend_baseline_when_default_policy_is_empty(self):
         """Explicit skill runs should not silently keep the legacy trend baseline."""
         registry = _make_registry_with_echo()
@@ -732,18 +770,27 @@ class TestBuildUserMessage(unittest.TestCase):
         self.assertIn("股票代码: 600519", msg)
         self.assertIn("报告类型: daily", msg)
 
-    def test_message_does_not_render_market_phase_context(self):
+    def test_message_renders_readable_market_phase_context_without_raw_keys(self):
         msg = self.executor._build_user_message(
             "Analyze",
             context={
                 "stock_code": "600519",
+                "report_language": "zh",
                 "market_phase_context": {
                     "phase": "intraday",
+                    "market": "cn",
+                    "market_local_time": "2026-03-27T10:00:00+08:00",
+                    "effective_daily_bar_date": "2026-03-26",
                     "is_partial_bar": True,
                 },
+                "realtime_quote": {"price": 1880.0},
             },
         )
         self.assertIn("股票代码: 600519", msg)
+        self.assertIn("市场阶段上下文", msg)
+        self.assertIn("盘中", msg)
+        self.assertIn("不得当作完整日线复盘", msg)
+        self.assertLess(msg.index("市场阶段上下文"), msg.index("[系统已获取的实时行情]"))
         self.assertNotIn("market_phase_context", msg)
         self.assertNotIn("is_partial_bar", msg)
         self.assertNotIn("is_market_open_now", msg)

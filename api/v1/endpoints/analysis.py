@@ -85,6 +85,16 @@ router = APIRouter()
 _SUPPORTED_FREE_TEXT_RE = re.compile(r"^[A-Za-z0-9.*\-+\u3400-\u9fff\s]+$")
 
 
+def _get_task_trace_id(task: Any) -> Optional[str]:
+    trace_id = getattr(task, "trace_id", None)
+    if isinstance(trace_id, str) and trace_id.strip():
+        return trace_id
+    task_id = getattr(task, "task_id", None)
+    if isinstance(task_id, str) and task_id.strip():
+        return task_id
+    return None
+
+
 def _market_review_lock_path(config: Config) -> Path:
     return market_review_lock_path(config)
 
@@ -344,6 +354,7 @@ def _handle_async_analysis_batch(
     accepted = [
         BatchTaskAcceptedItem(
             task_id=task.task_id,
+            trace_id=_get_task_trace_id(task),
             stock_code=task.stock_code,
             status="pending",
             message=f"分析任务已加入队列: {task.stock_code}",
@@ -377,6 +388,7 @@ def _handle_async_analysis_batch(
     if len(stock_codes) == 1 and accepted:
         task_accepted = TaskAccepted(
             task_id=accepted[0].task_id,
+            trace_id=accepted[0].trace_id,
             status="pending",
             message=accepted[0].message,
         )
@@ -449,6 +461,7 @@ def _handle_sync_analysis(
 
         return AnalysisResultResponse(
             query_id=query_id,
+            trace_id=result.get("trace_id") or query_id,
             stock_code=result.get("stock_code", stock_code),
             stock_name=result.get("stock_name"),
             report=report.model_dump() if report else None,
@@ -497,6 +510,7 @@ def trigger_market_review(
             status="accepted",
             message="今日大盘复盘相关市场均为非交易日，已跳过大盘复盘",
             send_notification=request.send_notification,
+            trace_id=None,
         )
 
     lock_token = _try_acquire_market_review_lock(config)
@@ -533,6 +547,7 @@ def trigger_market_review(
         message="大盘复盘任务已提交，完成后会保存报告并按配置推送通知",
         send_notification=request.send_notification,
         task_id=task.task_id,
+        trace_id=_get_task_trace_id(task),
     )
 
 
@@ -583,6 +598,7 @@ def get_task_list(
     task_infos = [
         TaskInfo(
             task_id=t.task_id,
+            trace_id=_get_task_trace_id(t),
             stock_code=t.stock_code,
             stock_name=t.stock_name,
             status=t.status.value,
@@ -723,6 +739,8 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
     payload = dict(task.result)
     if not payload.get("query_id"):
         payload["query_id"] = task.task_id
+    if not payload.get("trace_id"):
+        payload["trace_id"] = _get_task_trace_id(task) or task.task_id
     if not payload.get("stock_code"):
         payload["stock_code"] = task.stock_code
 
@@ -819,6 +837,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 
         return TaskStatus(
             task_id=task.task_id,
+            trace_id=_get_task_trace_id(task),
             status=task.status.value,
             progress=task.progress,
             result=result,
@@ -850,6 +869,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 
                 return TaskStatus(
                     task_id=task_id,
+                    trace_id=task_id,
                     status="completed",
                     progress=100,
                     result=None,
@@ -931,10 +951,12 @@ def get_analysis_status(task_id: str) -> TaskStatus:
             ).model_dump()
             return TaskStatus(
                 task_id=task_id,
+                trace_id=task_id,
                 status="completed",
                 progress=100,
                 result=AnalysisResultResponse(
                     query_id=task_id,
+                    trace_id=task_id,
                     stock_code=record.code,
                     stock_name=stock_name,
                     report=report_dict,

@@ -108,6 +108,10 @@ class MarketReviewAccepted(BaseModel):
     status: str = Field("accepted", description="提交状态")
     message: str = Field(..., description="提示信息")
     send_notification: bool = Field(..., description="是否发送通知")
+    trace_id: Optional[str] = Field(
+        None,
+        description="本次后台任务的诊断 trace ID",
+    )
     task_id: Optional[str] = Field(
         None,
         description="任务 ID（仅当任务实际提交时返回）",
@@ -118,6 +122,7 @@ class AnalysisResultResponse(BaseModel):
     """分析结果响应模型"""
     
     query_id: str = Field(..., description="分析记录唯一标识")
+    trace_id: Optional[str] = Field(None, description="诊断 trace ID")
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")
     report: Optional[Any] = Field(None, description="分析报告")
@@ -143,6 +148,7 @@ class TaskAccepted(BaseModel):
     """异步任务接受响应"""
     
     task_id: str = Field(..., description="任务 ID，用于查询状态")
+    trace_id: Optional[str] = Field(None, description="诊断 trace ID")
     status: str = Field(
         ..., 
         description="任务状态",
@@ -163,6 +169,7 @@ class BatchTaskAcceptedItem(BaseModel):
     """批量异步任务中的单个成功提交项。"""
 
     task_id: str = Field(..., description="任务 ID，用于查询状态")
+    trace_id: Optional[str] = Field(None, description="诊断 trace ID")
     stock_code: str = Field(..., description="股票代码")
     status: str = Field(
         ...,
@@ -230,6 +237,7 @@ class TaskStatus(BaseModel):
     """Task status model"""
     
     task_id: str = Field(..., description="任务 ID")
+    trace_id: Optional[str] = Field(None, description="诊断 trace ID")
     status: str = Field(
         ..., 
         description="任务状态",
@@ -286,6 +294,7 @@ class TaskInfo(BaseModel):
     """
     
     task_id: str = Field(..., description="任务 ID")
+    trace_id: Optional[str] = Field(None, description="诊断 trace ID")
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")
     status: TaskStatusEnum = Field(..., description="任务状态")

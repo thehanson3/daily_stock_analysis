@@ -7,11 +7,10 @@ import unittest
 
 import pandas as pd
 
-from data_provider.base import DataFetcherManager
-from data_provider.base import normalize_stock_code
+from data_provider.base import DataFetcherManager, normalize_stock_code
 from data_provider.baostock_fetcher import BaostockFetcher
-from data_provider.tushare_fetcher import TushareFetcher
 from data_provider.pytdx_fetcher import PytdxFetcher
+from data_provider.tushare_fetcher import TushareFetcher
 
 
 class _RecordingDailyFetcher:
@@ -64,6 +63,15 @@ class TestBaostockAShareCodeConversion(unittest.TestCase):
         self.assertEqual(fetcher._convert_stock_code("600519.SH"), "sh.600519")
         self.assertEqual(fetcher._convert_stock_code("000001.SZ"), "sz.000001")
 
+    def test_convert_prefix_code_preserves_explicit_exchange_hint(self) -> None:
+        fetcher = BaostockFetcher()
+
+        self.assertEqual(fetcher._convert_stock_code("SH000001"), "sh.000001")
+        self.assertEqual(fetcher._convert_stock_code("SH.000001"), "sh.000001")
+        self.assertEqual(fetcher._convert_stock_code("SZ600519"), "sz.600519")
+        self.assertEqual(fetcher._convert_stock_code("SZ.600519"), "sz.600519")
+        self.assertEqual(fetcher._convert_stock_code("ss.600519"), "sh.600519")
+
 
 class TestPytdxAShareCodeConversion(unittest.TestCase):
     def test_get_market_code_for_bare_stock_codes(self) -> None:
@@ -74,23 +82,33 @@ class TestPytdxAShareCodeConversion(unittest.TestCase):
         self.assertEqual(fetcher._get_market_code("000001"), (0, "000001"))
         self.assertEqual(fetcher._get_market_code("300750"), (0, "300750"))
 
-    def test_get_market_code_for_prefixed_codes(self) -> None:
+    def test_get_market_code_preserves_explicit_exchange_hint(self) -> None:
         fetcher = PytdxFetcher(hosts=[])
 
-        self.assertEqual(fetcher._get_market_code("SH.600519"), (1, "600519"))
-        self.assertEqual(fetcher._get_market_code("sh.600519"), (1, "600519"))
-        self.assertEqual(fetcher._get_market_code("SZ.000001"), (0, "000001"))
+        self.assertEqual(fetcher._get_market_code("SH000001"), (1, "000001"))
+        self.assertEqual(fetcher._get_market_code("SH.000001"), (1, "000001"))
+        self.assertEqual(fetcher._get_market_code("SZ600519"), (0, "600519"))
+        self.assertEqual(fetcher._get_market_code("SZ.600519"), (0, "600519"))
         self.assertEqual(fetcher._get_market_code("ss.600519"), (1, "600519"))
 
 
 class TestTushareAShareCodeConversion(unittest.TestCase):
-    def test_convert_prefixed_dot_code_to_tushare_format(self) -> None:
+    def test_convert_bare_stock_codes_to_tushare_format(self) -> None:
         fetcher = TushareFetcher()
 
-        self.assertEqual(fetcher._convert_stock_code("SH.600519"), "600519.SH")
-        self.assertEqual(fetcher._convert_stock_code("sh.600519"), "600519.SH")
-        self.assertEqual(fetcher._convert_stock_code("SZ.000001"), "000001.SZ")
-        self.assertEqual(fetcher._convert_stock_code("sz.000001"), "000001.SZ")
+        self.assertEqual(fetcher._convert_stock_code("605499"), "605499.SH")
+        self.assertEqual(fetcher._convert_stock_code("001979"), "001979.SZ")
+        self.assertEqual(fetcher._convert_stock_code("003816"), "003816.SZ")
+        self.assertEqual(fetcher._convert_stock_code("301012"), "301012.SZ")
+
+    def test_convert_prefix_code_preserves_explicit_exchange_hint(self) -> None:
+        fetcher = TushareFetcher()
+
+        self.assertEqual(fetcher._convert_stock_code("SH000001"), "000001.SH")
+        self.assertEqual(fetcher._convert_stock_code("SH.000001"), "000001.SH")
+        self.assertEqual(fetcher._convert_stock_code("SZ600519"), "600519.SZ")
+        self.assertEqual(fetcher._convert_stock_code("SZ.600519"), "600519.SZ")
+        self.assertEqual(fetcher._convert_stock_code("ss.600519"), "600519.SH")
 
 
 class TestNormalizeStockCode(unittest.TestCase):
@@ -99,6 +117,7 @@ class TestNormalizeStockCode(unittest.TestCase):
         self.assertEqual(normalize_stock_code("sh.600519"), "600519")
         self.assertEqual(normalize_stock_code("SZ.000001"), "000001")
         self.assertEqual(normalize_stock_code("sz.000001"), "000001")
+        self.assertEqual(normalize_stock_code("BJ.920748"), "920748")
 
 
 if __name__ == "__main__":

@@ -625,7 +625,13 @@ P0 does not connect this baseline to pipeline / Agent / API / Web / Bot, does no
 
 P1a constructs and passes an internal `market_phase_context` through the regular stock-analysis pipeline, the legacy Agent context, and multi-agent `ctx.meta`. The context includes market, phase, market-local date, effective daily-bar date, trading-day / market-open / partial-bar tristate flags, best-effort open/close minute estimates, and degradation warning codes such as `unknown_market`, `calendar_unavailable`, and `calendar_error`.
 
-P1a still does not change prompt wording, API/Web/Bot parameters, report schemas, stable history/task-status metadata, or quote freshness/data quality semantics. Regular history snapshots and Agent history snapshots strip this runtime-only field. P1b is left to define persistent metadata and task-status display contracts.
+P1a itself does not change prompt wording, API/Web/Bot parameters, report schemas, stable history/task-status metadata, or quote freshness/data quality semantics. Regular history snapshots and Agent history snapshots strip this runtime-only field. P1b is left to define persistent metadata and task-status display contracts.
+
+### Market Phase Prompt Injection (Issue #1386 P2-min)
+
+P2-min starts rendering the runtime market phase into an LLM-readable prompt section for analysis paths that already receive `market_phase_context`. Regular analysis, single Agent, and multi-agent prompts can now see the current phase, market-local time, latest reusable complete daily-bar date, and the minimal phase constraints: pre-market runs must not describe today's price action as already happened, intraday / lunch-break / near-close runs must treat the latest daily bar as potentially unfinished, post-market runs can keep the complete-session recap style, and non-trading or unknown phases should stay conservative.
+
+P2-min still does not add API/Web/Bot parameters, persist phase into history/task status/report metadata, change report JSON schemas, or introduce the full quote freshness, fallback, stale, or data-quality contract. Bot/API direct Agent entrypoints that do not go through the P1a pipeline to build `market_phase_context` keep their previous behavior; entrypoint propagation and visible labels are left to later P4+ work.
 
 ---
 

@@ -100,6 +100,57 @@ class TestStorage(unittest.TestCase):
 
         DatabaseManager.reset_instance()
 
+    def test_conversation_summary_upsert_and_delete_with_session(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        db.save_conversation_message("summary-session", "user", "hello")
+        db.upsert_conversation_summary(
+            "summary-session",
+            "first summary",
+            covered_message_id=1,
+            source_message_count=1,
+            estimated_tokens=10,
+        )
+        db.upsert_conversation_summary(
+            "summary-session",
+            "updated summary",
+            covered_message_id=2,
+            source_message_count=2,
+            estimated_tokens=12,
+        )
+
+        summary = db.get_conversation_summary("summary-session")
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["summary"], "updated summary")
+        self.assertEqual(summary["covered_message_id"], 2)
+        self.assertEqual(summary["source_message_count"], 2)
+
+        deleted = db.delete_conversation_session("summary-session")
+
+        self.assertEqual(deleted, 1)
+        self.assertIsNone(db.get_conversation_summary("summary-session"))
+
+        DatabaseManager.reset_instance()
+
+    def test_get_visible_conversation_messages_returns_ordered_visible_content(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        db.save_conversation_message("visible-session", "system", "hidden")
+        db.save_conversation_message("visible-session", "user", "question")
+        db.save_conversation_message("visible-session", "assistant", "answer")
+
+        messages = db.get_visible_conversation_messages("visible-session")
+
+        self.assertEqual(
+            [(item["role"], item["content"]) for item in messages],
+            [("user", "question"), ("assistant", "answer")],
+        )
+        self.assertIsInstance(messages[0]["id"], int)
+
+        DatabaseManager.reset_instance()
+
     def test_file_sqlite_enables_wal_and_busy_timeout(self):
         temp_dir = tempfile.TemporaryDirectory()
         db_path = os.path.join(temp_dir.name, "sqlite_pragmas.db")

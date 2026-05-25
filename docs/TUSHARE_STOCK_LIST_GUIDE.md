@@ -22,13 +22,19 @@ TUSHARE_TOKEN=你的tushare_token
 python3 scripts/fetch_tushare_stock_list.py
 ```
 
+如需针对 A 股名称状态做修正，可以加上 `--a-rk`，脚本会保持 `stock_basic` 作为基础来源，再用 `rt_k` 对带 `XD`、`XR`、`DR`、`N`、`C` 前缀的名称进行回填，并覆盖输出到 `data/stock_list_a.csv`：
+
+```bash
+python3 scripts/fetch_tushare_stock_list.py --a-rk
+```
+
 ### 3. 查看输出
 
 数据将保存到 `data/` 目录：
 
 ```
 data/
-├── stock_list_a.csv       # A股列表
+├── stock_list_a.csv       # A股列表（--a-rk 时为修正后名称）
 ├── stock_list_hk.csv      # 港股列表
 ├── stock_list_us.csv      # 美股列表
 └── README_stock_list.md   # 数据说明文档
@@ -53,6 +59,8 @@ data/
 ## 输出文件格式
 
 ### A股（stock_list_a.csv）
+
+执行 `--a-rk` 时，这个文件会写入修正后的 A 股名称。
 
 ```csv
 ts_code,symbol,name,area,industry,market,exchange,list_date,...
@@ -97,12 +105,26 @@ stock = a_stocks[a_stocks['ts_code'] == '600519.SH']
 print(stock[['name', 'industry', 'list_date']])
 ```
 
-### 更新自动补全索引
+### 刷新股票自动补全索引
 
-获取数据后，可以更新自动补全索引：
+推荐直接使用一键刷新脚本，它会默认在抓取 A 股时使用 `--a-rk`，然后生成并同步自动补全索引：
 
 ```bash
-# 将 Tushare CSV 数据生成为前端自动补全索引
+pip install -r requirements.txt
+python3 scripts/refresh_stock_index.py
+```
+
+生成自动补全索引依赖 `pypinyin` 写入中文股票的完整拼音和拼音首字母字段；缺少该依赖时脚本会直接失败，避免生成无法支持拼音搜索的降级索引。
+
+如果你只想单独更新 CSV，可以先抓取数据：
+
+```bash
+python3 scripts/fetch_tushare_stock_list.py --a-rk
+```
+
+如果已经有新的 CSV，只想重新生成索引：
+
+```bash
 python3 scripts/generate_index_from_csv.py --test  # 先测试
 python3 scripts/generate_index_from_csv.py         # 确认后生成
 ```

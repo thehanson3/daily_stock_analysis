@@ -127,6 +127,104 @@ describe('SettingsField', () => {
     expect(onChange).toHaveBeenCalledWith('NOTIFICATION_MIN_SEVERITY', '');
   });
 
+  it('renders context compression profile options with Chinese labels', () => {
+    const onChange = vi.fn();
+
+    render(
+      <SettingsField
+        item={{
+          key: 'AGENT_CONTEXT_COMPRESSION_PROFILE',
+          value: 'balanced',
+          rawValueExists: true,
+          isMasked: false,
+          schema: {
+            key: 'AGENT_CONTEXT_COMPRESSION_PROFILE',
+            category: 'agent',
+            dataType: 'string',
+            uiControl: 'select',
+            isSensitive: false,
+            isRequired: false,
+            isEditable: true,
+            options: [
+              { label: '成本优先', value: 'cost' },
+              { label: '均衡推荐', value: 'balanced' },
+              { label: '长上下文原文优先', value: 'long_context_raw_first' },
+            ],
+            validation: {
+              enum: ['cost', 'balanced', 'long_context_raw_first'],
+            },
+            displayOrder: 72,
+          },
+        }}
+        value="balanced"
+        onChange={onChange}
+      />
+    );
+
+    expect(screen.getByLabelText('上下文压缩策略')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '成本优先' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '均衡推荐' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '长上下文原文优先' })).toBeInTheDocument();
+  });
+
+  it('renders blank-value preset guidance for context compression numeric fields', () => {
+    const onChange = vi.fn();
+
+    render(
+      <>
+        <SettingsField
+          item={{
+            key: 'AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS',
+            value: '',
+            rawValueExists: false,
+            isMasked: false,
+            schema: {
+              key: 'AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS',
+              category: 'agent',
+              dataType: 'integer',
+              uiControl: 'number',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: { min: 1000 },
+              displayOrder: 73,
+            },
+          }}
+          value=""
+          onChange={onChange}
+        />
+        <SettingsField
+          item={{
+            key: 'AGENT_CONTEXT_PROTECTED_TURNS',
+            value: '',
+            rawValueExists: false,
+            isMasked: false,
+            schema: {
+              key: 'AGENT_CONTEXT_PROTECTED_TURNS',
+              category: 'agent',
+              dataType: 'integer',
+              uiControl: 'number',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: { min: 1 },
+              displayOrder: 74,
+            },
+          }}
+          value=""
+          onChange={onChange}
+        />
+      </>
+    );
+
+    expect(screen.getByLabelText('压缩触发阈值（tokens）')).toBeInTheDocument();
+    expect(screen.getByLabelText('原文保护轮次')).toBeInTheDocument();
+    expect(screen.getByText(/估算历史 token 超过该值时触发摘要/)).toHaveTextContent('留空则跟随当前上下文压缩策略 profile 默认值');
+    expect(screen.getByText(/压缩时最近 N 个用户轮次及其后的回复保持原文/)).toHaveTextContent('留空则跟随当前上下文压缩策略 profile 默认值');
+  });
+
   it('renders localized custom webhook body template guidance', () => {
     const onChange = vi.fn();
 

@@ -56,6 +56,7 @@ from src.report_language import (
 )
 from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import get_market_role, get_market_guidelines
+from src.market_phase_prompt import format_market_phase_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -2746,6 +2747,12 @@ class GeminiAnalyzer:
 | 分析日期 | {context.get('date', unknown_text)} |
 
 ---
+"""
+        prompt += format_market_phase_prompt_section(
+            context.get("market_phase_context"),
+            report_language=report_language,
+        )
+        prompt += """
 
 ## 📈 技术面数据
 

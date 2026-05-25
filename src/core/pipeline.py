@@ -46,6 +46,12 @@ from src.report_language import (
 )
 from src.search_service import SearchService
 from src.services.social_sentiment_service import SocialSentimentService
+from src.services.run_diagnostics import (
+    activate_run_diagnostic_context,
+    current_diagnostic_snapshot,
+    get_current_diagnostic_context,
+    reset_run_diagnostic_context,
+)
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import (
@@ -82,6 +88,7 @@ class StockAnalysisPipeline:
         max_workers: Optional[int] = None,
         source_message: Optional[BotMessage] = None,
         query_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
         query_source: Optional[str] = None,
         save_context_snapshot: Optional[bool] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
@@ -98,6 +105,7 @@ class StockAnalysisPipeline:
         self.max_workers = max_workers or self.config.max_workers
         self.source_message = source_message
         self.query_id = query_id
+        self.trace_id = trace_id or query_id
         self.query_source = self._resolve_query_source(query_source)
         self.save_context_snapshot = (
             self.config.save_context_snapshot if save_context_snapshot is None else save_context_snapshot
@@ -955,15 +963,22 @@ class StockAnalysisPipeline:
             # 保存分析历史记录
             if result and result.success:
                 try:
-                    history_context = self._without_market_phase_context(initial_context)
-                    history_context["stock_name"] = resolved_stock_name
+                    agent_context_snapshot = self._build_context_snapshot(
+                        enhanced_context={
+                            **self._without_market_phase_context(initial_context),
+                            "stock_name": resolved_stock_name,
+                        },
+                        news_content=initial_context.get("news_context"),
+                        realtime_quote=realtime_quote,
+                        chip_data=chip_data,
+                    )
                     self.db.save_analysis_history(
                         result=result,
                         query_id=query_id,
                         report_type=report_type.value,
                         news_content=None,
-                        context_snapshot=history_context,
-                        save_snapshot=self.save_context_snapshot
+                        context_snapshot=agent_context_snapshot,
+                        save_snapshot=self.save_context_snapshot,
                     )
                 except Exception as e:
                     logger.warning(f"[{code}] 保存 Agent 分析历史失败: {e}")
@@ -1582,6 +1597,9 @@ class StockAnalysisPipeline:
             "realtime_quote_raw": self._safe_to_dict(realtime_quote),
             "chip_distribution_raw": self._safe_to_dict(chip_data),
         }
+        diagnostic_snapshot = current_diagnostic_snapshot()
+        if diagnostic_snapshot is not None:
+            snapshot["diagnostics"] = diagnostic_snapshot
         if self.analysis_skills is not None:
             snapshot["skills"] = list(self.analysis_skills)
         return snapshot
@@ -1710,6 +1728,16 @@ class StockAnalysisPipeline:
         from src.services.history_loader import set_frozen_target_date, reset_frozen_target_date
         frozen_td = self._resolve_resume_target_date(code, current_time=current_time)
         token = set_frozen_target_date(frozen_td)
+        effective_query_id = analysis_query_id or getattr(self, "query_id", None) or uuid.uuid4().hex
+        effective_trace_id = getattr(self, "trace_id", None) or effective_query_id
+        diag_token = None
+        if get_current_diagnostic_context() is None:
+            diag_token = activate_run_diagnostic_context(
+                trace_id=effective_trace_id,
+                query_id=effective_query_id,
+                stock_code=code,
+                trigger_source=getattr(self, "query_source", None),
+            )
         try:
             self._emit_progress(12, f"{code}：正在准备分析任务")
             # Step 1: 获取并保存数据
@@ -1728,7 +1756,6 @@ class StockAnalysisPipeline:
                 logger.info(f"[{code}] 跳过 AI 分析（dry-run 模式）")
                 return None
             
-            effective_query_id = analysis_query_id or getattr(self, "query_id", None) or uuid.uuid4().hex
             analyze_kwargs = {"query_id": effective_query_id}
             if current_time is not None:
                 analyze_kwargs["current_time"] = current_time
@@ -1759,6 +1786,7 @@ class StockAnalysisPipeline:
             logger.exception(f"[{code}] 处理过程发生未知异常: {e}")
             return None
         finally:
+            reset_run_diagnostic_context(diag_token)
             reset_frozen_target_date(token)
     
     def run(

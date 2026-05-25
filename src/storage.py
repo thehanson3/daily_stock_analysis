@@ -609,6 +609,21 @@ class ConversationMessage(Base):
     created_at = Column(DateTime, default=datetime.now, index=True)
 
 
+class ConversationSummary(Base):
+    """Rolling summary for visible Agent chat history."""
+
+    __tablename__ = 'conversation_summaries'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(100), nullable=False, unique=True, index=True)
+    summary = Column(Text, nullable=False)
+    covered_message_id = Column(Integer, nullable=False, default=0)
+    source_message_count = Column(Integer, nullable=False, default=0)
+    estimated_tokens = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+
 class LLMUsage(Base):
     """One row per litellm.completion() call — token-usage audit log."""
 
@@ -2020,6 +2035,78 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             # 倒序返回，保证时间顺序
             return [{"role": msg.role, "content": msg.content} for msg in reversed(messages)]
 
+    def get_visible_conversation_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return visible user/assistant conversation messages in chronological order."""
+        with self.session_scope() as session:
+            stmt = (
+                select(ConversationMessage)
+                .where(
+                    and_(
+                        ConversationMessage.session_id == session_id,
+                        ConversationMessage.role.in_(["user", "assistant"]),
+                    )
+                )
+                .order_by(ConversationMessage.created_at, ConversationMessage.id)
+            )
+            messages = session.execute(stmt).scalars().all()
+            return [
+                {
+                    "id": msg.id,
+                    "role": msg.role,
+                    "content": msg.content,
+                    "created_at": msg.created_at,
+                }
+                for msg in messages
+                if msg.content
+            ]
+
+    def get_conversation_summary(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the rolling summary for a conversation session, if present."""
+        with self.session_scope() as session:
+            stmt = select(ConversationSummary).where(
+                ConversationSummary.session_id == session_id
+            )
+            row = session.execute(stmt).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "id": row.id,
+                "session_id": row.session_id,
+                "summary": row.summary,
+                "covered_message_id": row.covered_message_id,
+                "source_message_count": row.source_message_count,
+                "estimated_tokens": row.estimated_tokens,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+
+    def upsert_conversation_summary(
+        self,
+        session_id: str,
+        summary: str,
+        covered_message_id: int,
+        source_message_count: int,
+        estimated_tokens: int,
+    ) -> None:
+        """Create or update the rolling summary for a conversation session."""
+        with self.session_scope() as session:
+            now = datetime.now()
+            values = {
+                "session_id": session_id,
+                "summary": summary,
+                "covered_message_id": int(covered_message_id or 0),
+                "source_message_count": int(source_message_count or 0),
+                "estimated_tokens": int(estimated_tokens or 0),
+                "updated_at": now,
+            }
+            stmt = sqlite_insert(ConversationSummary).values(**values)
+            session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=["session_id"],
+                    set_=values,
+                )
+            )
+
     def conversation_session_exists(self, session_id: str) -> bool:
         """Return True when at least one message exists for the given session."""
         with self.session_scope() as session:
@@ -2138,6 +2225,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             删除的消息数
         """
         with self.session_scope() as session:
+            session.execute(
+                delete(ConversationSummary).where(
+                    ConversationSummary.session_id == session_id
+                )
+            )
             result = session.execute(
                 delete(ConversationMessage).where(
                     ConversationMessage.session_id == session_id

@@ -1,6 +1,6 @@
-# AnalysisContextPack P0：分析上下文盘点与字段边界
+# AnalysisContextPack：P0 盘点与 P1 内部契约
 
-本页是 Issue #1389 的 P0 盘点文档，用于记录当前 DSA 分析上下文的真实来源、消费路径、字段状态边界和后续 `AnalysisContextPack` 的首版范围。P0 只做现状盘点和契约边界，不新增 schema、builder 或 runtime 接入。
+本页是 Issue #1389 的专题文档，用于记录当前 DSA 分析上下文的真实来源、消费路径、字段状态边界，以及 P1 `AnalysisContextPack` 内部契约。P0 负责现状盘点和契约边界；P1 只新增内部 schema/envelope、block catalog、类型约定和脱敏序列化，不新增 builder 或 runtime 接入。
 
 ## 术语与边界
 
@@ -19,12 +19,58 @@
 P0 的目标是让后续 P1/P2/P3 可以基于真实仓库边界设计 `AnalysisContextPack`，而不是提前改造运行时。
 
 - P0 覆盖普通分析、Agent、告警、持仓、回测、历史、通知七条路径的上下文盘点。
-- P0 固定字段质量状态词，但不定义 `AnalysisContextPack` schema。
+- P0 固定字段质量状态词；P1 已新增 `AnalysisContextPack` 内部 schema，但仍不新增 builder、不接入 runtime、不公开完整 pack。
 - P0 不新增 builder，不新增配置项，不新增数据库字段，不改变 API、报告、历史或通知 payload。
 - P0 不接入 runtime，不改 `src/` 分析、Agent、告警、持仓、回测或通知逻辑。
 - P0 不 pack 化 `market_review`、`market_light` 或大盘红绿灯专题快照；这些只作为历史快照中的其他 `report_kind` / 专题消费边界记录。
 - P0 不把 `fetch_failed` 加入字段质量状态词；`fetch_failed` 与 `not_supported` 的细分留到 P5 数据质量评分与模型提示阶段。
 - P0 不在 README 扩写实现细节；本页作为专题文档，由 `docs/INDEX.md` / `docs/INDEX_EN.md` 入口发现。
+
+## P1 内部契约
+
+P1 落地 `src/schemas/analysis_context_pack.py`，只定义内部 schema/envelope，方便 P2 builder 和 P3 runtime 消费时复用同一结构。P1 不填充运行时数据、不新增 fetcher、不改变 Prompt、不写入 history/task/report metadata，也不把完整 pack 暴露到 API、Web、Bot、Desktop 或通知。
+
+P1 schema 包含：
+
+- `PACK_VERSION = "1.0"`，并通过 `AnalysisContextPack.pack_version` 标记契约版本。
+- `ContextFieldStatus`：只允许 `available`、`missing`、`not_supported`、`fallback`、`stale`、`estimated`、`partial`；`fetch_failed` 仍留到 P5。
+- `AnalysisSubject`：顶层身份槽，只包含 `code`、`stock_name`、`market`；`exchange`、`currency`、`industry` 留给 P2 builder 从现有 artifacts 填充，不重复新增 `identity` block。
+- `AnalysisContextItem`：字段级输入项，包含 `status`、`value`、`source`、`timestamp`、`fallback_from`、`missing_reason`、`warnings`、`metadata`。
+- `AnalysisContextBlock`：数据块级分组，包含 `status`、`items`、`source`、`timestamp`、`warnings`、`metadata`，其中 `items` 是 `Dict[str, AnalysisContextItem]`。
+- `DataQuality`：P1 只保留 `warnings` 与 `metadata` 容器，不做评分、聚合计数或模型置信度限制。
+- `AnalysisContextPack`：顶层 envelope，包含 `pack_version`、`subject`、`phase`、`blocks`、`data_quality`、`metadata`、`created_at`。
+
+时间字段约定：
+
+- `AnalysisContextPack.created_at` 使用 `datetime`，由 `model_dump(mode="json")` 输出 ISO 8601 字符串。
+- `AnalysisContextItem.timestamp` 与 `AnalysisContextBlock.timestamp` 使用 `Optional[str]`，约定为 ISO 8601 datetime 字符串；P1 schema 在构造时校验该格式，date-only、自然语言时间或斜杠分隔日期会被拒绝；P2 builder 复用现有 artifact 时间戳时不做强制二次转换。
+
+状态语义：
+
+- `block.status` 表示整块可用性。
+- `item.status` 表示字段级质量。
+- P1 不实现 `item.status` 到 `block.status` 的自动聚合推导。
+
+P1 Block Catalog：
+
+| block key | P1 语义 | P1 边界 |
+| --- | --- | --- |
+| `quote` | 实时行情和报价相关输入 | 只定义可表达位置，不抓取或填充数据。 |
+| `daily_bars` | 完整日线窗口和最近完整日线日期 | P1 不判断 partial bar。 |
+| `technical` | 技术指标、量价结构和形态 | P1 不生成指标。 |
+| `fundamentals` | 估值、成长、盈利、财报和股东回报 | P1 不新增基本面 fetcher。 |
+| `news` | 新闻、公告、舆情和催化事件输入 | P1 不改变新闻搜索。 |
+| `portfolio` | 是否持仓、账户摘要、成本、数量、仓位和 stale 摘要 | P1 不纳入交易流水、现金流水或完整账户隐私数据。 |
+| `chip` / `capital_flow` | 筹码、资金流和主力行为 | 后续扩展键，P1 只允许契约表达。 |
+| `events` / `market_context` | 风险事件、市场宽度、指数、板块和热点环境 | 后续扩展键，不把 `market_review` / `market_light` 作为首版单股 pack。 |
+
+`phase` 字段只接收 #1386 `MarketPhaseContext.to_dict()` 产物，保持 `Dict[str, Any]`，不重新定义 phase enum 或 phase 子模型。
+
+脱敏边界：
+
+- `AnalysisContextPack.to_safe_dict()` 先执行 `model_dump(mode="json")`，再调用 `redact_sensitive_mapping()`。
+- `redact_sensitive_mapping()` 只做 dict/list 的 key-based 递归脱敏，命中 `api_key`、`access_token`、`refresh_token`、`authorization_header`、`webhook_url`、`password`、`cookie`、`secret`、`token`、`sendkey`、`license_key` 等敏感键或短语时把值替换为 `[REDACTED]`。
+- P1 不扫描普通字符串值，不做 URL 正则脱敏，不把 `data_api` 或裸 `api` / `key` 当作敏感命中，避免把本契约扩展成通用 secrets engine。
 
 ## 字段质量状态
 

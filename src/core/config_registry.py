@@ -10,11 +10,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
-from src.config import AGENT_MAX_STEPS_DEFAULT
+from src.config import AGENT_CONTEXT_COMPRESSION_PROFILES, AGENT_MAX_STEPS_DEFAULT
 from src.notification_noise import NOTIFICATION_SEVERITIES
 from src.notification_routing import ROUTABLE_NOTIFICATION_CHANNELS
 
-SCHEMA_VERSION = "2026-05-10"
+SCHEMA_VERSION = "2026-05-25"
 
 _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
     {
@@ -2752,6 +2752,66 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "validation": {},
         "display_order": 68,
+    },
+    "AGENT_CONTEXT_COMPRESSION_ENABLED": {
+        "title": "Agent Context Compression",
+        "description": "Enable rolling compression of visible Agent chat history. Default is off to preserve existing behavior.",
+        "category": "agent",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 72,
+    },
+    "AGENT_CONTEXT_COMPRESSION_PROFILE": {
+        "title": "Context Compression Profile",
+        "description": "Preset for visible chat history compression. Trigger/protected-turn fields can be left empty to follow the selected profile.",
+        "category": "agent",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "balanced",
+        "options": [
+            {"label": "成本优先", "value": "cost"},
+            {"label": "均衡推荐", "value": "balanced"},
+            {"label": "长上下文原文优先", "value": "long_context_raw_first"},
+        ],
+        "validation": {"enum": list(AGENT_CONTEXT_COMPRESSION_PROFILES.keys())},
+        "display_order": 73,
+    },
+    "AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS": {
+        "title": "Context Compression Trigger Tokens",
+        "description": "Token threshold for visible chat history compression. Leave empty to follow the selected compression profile preset.",
+        "category": "agent",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "",
+        "options": [],
+        "validation": {"min": 1000, "max": 200000},
+        "display_order": 74,
+    },
+    "AGENT_CONTEXT_PROTECTED_TURNS": {
+        "title": "Context Protected Turns",
+        "description": "Recent user turns preserved verbatim during visible chat history compression. Leave empty to follow the selected compression profile preset.",
+        "category": "agent",
+        "data_type": "integer",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "",
+        "options": [],
+        "validation": {"min": 1, "max": 20},
+        "display_order": 75,
     },
     "AGENT_EVENT_MONITOR_ENABLED": {
         "title": "Event Monitor",

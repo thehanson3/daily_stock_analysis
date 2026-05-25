@@ -19,11 +19,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from src.config import get_config
+from src.agent.chat_context import build_visible_chat_history
 from src.agent.llm_adapter import LLMToolAdapter
 from src.agent.runner import run_agent_loop, parse_dashboard_json
 from src.agent.tools.registry import ToolRegistry
 from src.report_language import normalize_report_language
 from src.market_context import get_market_role, get_market_guidelines
+from src.market_phase_prompt import format_market_phase_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -555,8 +558,9 @@ class AgentExecutor:
         tool_decls = self.tool_registry.to_openai_tools()
 
         # Get conversation history
-        session = conversation_manager.get_or_create(session_id)
-        history = session.get_history()
+        conversation_manager.get_or_create(session_id)
+        config = getattr(self.llm_adapter, "_config", None) or get_config()
+        history = build_visible_chat_history(session_id, self.llm_adapter, config)
 
         # Initialize conversation
         messages: List[Dict[str, Any]] = [
@@ -661,6 +665,13 @@ class AgentExecutor:
                 parts.append("输出语言: English（所有 JSON 键名保持不变，所有面向用户的文本值使用英文）")
             else:
                 parts.append("输出语言: 中文（所有 JSON 键名保持不变，所有面向用户的文本值使用中文）")
+
+            market_phase_section = format_market_phase_prompt_section(
+                context.get("market_phase_context"),
+                report_language=report_language,
+            )
+            if market_phase_section:
+                parts.append(market_phase_section)
 
             # Inject pre-fetched context data to avoid redundant fetches
             if context.get("realtime_quote"):

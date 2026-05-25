@@ -17,6 +17,11 @@ ensure_litellm_stub()
 from src.analyzer import AnalysisResult
 from src.core.pipeline import StockAnalysisPipeline
 from src.enums import ReportType
+from src.services.run_diagnostics import (
+    activate_run_diagnostic_context,
+    current_diagnostic_snapshot,
+    reset_run_diagnostic_context,
+)
 
 
 def _analysis_result() -> AnalysisResult:
@@ -199,7 +204,63 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         save_kwargs = pipeline.db.save_analysis_history.call_args.kwargs
         self.assertTrue(save_kwargs["save_snapshot"])
         self.assertNotIn("market_phase_context", save_kwargs["context_snapshot"])
-        self.assertEqual(save_kwargs["context_snapshot"]["stock_name"], "贵州茅台")
+        enhanced_context = save_kwargs["context_snapshot"]["enhanced_context"]
+        self.assertEqual(enhanced_context["stock_name"], "贵州茅台")
+
+    def test_agent_history_snapshot_contains_diagnostics_context_when_active(self):
+        pipeline = _make_pipeline(agent_mode=True, save_context_snapshot=True)
+        pipeline._ensure_agent_history = MagicMock()
+        phase_payload = _phase_payload()
+        token = activate_run_diagnostic_context(
+            trace_id="trace-agent",
+            query_id="q-agent",
+            stock_code="600519",
+            trigger_source="api",
+        )
+        try:
+            from src.agent.executor import AgentResult
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "stock_name": "贵州茅台",
+                    "sentiment_score": 70,
+                    "trend_prediction": "震荡",
+                    "operation_advice": "持有",
+                    "decision_type": "hold",
+                },
+                provider="test",
+            )
+            executor = MagicMock()
+            executor.run.return_value = agent_result
+
+            with patch("src.agent.factory.build_agent_executor", return_value=executor):
+                result = pipeline._analyze_with_agent(
+                    code="600519",
+                    report_type=ReportType.SIMPLE,
+                    query_id="q-agent",
+                    stock_name="贵州茅台",
+                    realtime_quote=None,
+                    chip_data=None,
+                    fundamental_context={"market": "cn"},
+                    trend_result=None,
+                    market_phase_context=phase_payload,
+                )
+
+            self.assertIsNotNone(result)
+            save_kwargs = pipeline.db.save_analysis_history.call_args.kwargs
+            self.assertTrue(save_kwargs["save_snapshot"])
+            snapshot = save_kwargs["context_snapshot"]
+            self.assertIn("diagnostics", snapshot)
+            diagnostics = snapshot["diagnostics"]
+            self.assertIsNotNone(diagnostics)
+            self.assertEqual(diagnostics["trace_id"], "trace-agent")
+            self.assertEqual(diagnostics["query_id"], "q-agent")
+            self.assertEqual(diagnostics["provider_runs"], [])
+            self.assertEqual(current_diagnostic_snapshot(), diagnostics)
+        finally:
+            reset_run_diagnostic_context(token)
 
 
 if __name__ == "__main__":

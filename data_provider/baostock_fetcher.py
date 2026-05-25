@@ -155,9 +155,9 @@ class BaostockFetcher(BaseFetcher):
             return raw_code.lower()
 
         exchange_hint = None
-        if upper.endswith(('.SH', '.SS')):
+        if upper.startswith(('SH', 'SS')) or upper.endswith(('.SH', '.SS')):
             exchange_hint = 'sh'
-        elif upper.endswith('.SZ'):
+        elif upper.startswith('SZ') or upper.endswith('.SZ'):
             exchange_hint = 'sz'
 
         code = normalize_stock_code(raw_code)

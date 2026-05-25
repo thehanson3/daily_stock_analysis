@@ -42,7 +42,8 @@ from src.agent.protocols import (
 )
 from src.agent.runner import parse_dashboard_json
 from src.agent.tools.registry import ToolRegistry
-from src.config import AGENT_MAX_STEPS_DEFAULT
+from src.agent.chat_context import build_visible_chat_history
+from src.config import AGENT_MAX_STEPS_DEFAULT, get_config
 from src.report_language import normalize_report_language
 
 if TYPE_CHECKING:
@@ -315,8 +316,9 @@ class AgentOrchestrator:
         ctx.session_id = session_id
         ctx.meta["response_mode"] = "chat"
 
-        session = conversation_manager.get_or_create(session_id)
-        history = session.get_history()
+        conversation_manager.get_or_create(session_id)
+        config = self.config or getattr(self.llm_adapter, "_config", None) or get_config()
+        history = build_visible_chat_history(session_id, self.llm_adapter, config)
         if history:
             ctx.meta["conversation_history"] = history
 
