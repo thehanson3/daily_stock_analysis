@@ -170,6 +170,51 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             payload = json.loads(row.raw_result or "{}")
             self.assertEqual(payload.get("model_used"), "gemini/gemini-2.0-flash")
 
+    def test_update_analysis_history_diagnostics_preserves_snapshot_fields(self) -> None:
+        """通知发送后补写 diagnostics 时，不应覆盖已有上下文字段。"""
+        saved = self.db.save_analysis_history(
+            result=self._build_result(),
+            query_id="query_diag_patch",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot={
+                "enhanced_context": {"code": "600519"},
+                "diagnostics": {
+                    "trace_id": "trace-1",
+                    "query_id": "query_diag_patch",
+                    "stock_code": "600519",
+                    "notification_runs": [],
+                },
+            },
+            save_snapshot=True,
+        )
+        self.assertEqual(saved, 1)
+
+        updated = self.db.update_analysis_history_diagnostics(
+            query_id="query_diag_patch",
+            code="600519",
+            notification_runs=[
+                {
+                    "channel": "report",
+                    "status": "success",
+                    "success": True,
+                }
+            ],
+        )
+
+        self.assertEqual(updated, 1)
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_diag_patch"
+            ).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            snapshot = json.loads(row.context_snapshot or "{}")
+            self.assertEqual(snapshot["enhanced_context"]["code"], "600519")
+            notification_run = snapshot["diagnostics"]["notification_runs"][-1]
+            self.assertEqual(notification_run["status"], "success")
+            self.assertEqual(notification_run["trace_id"], "trace-1")
+
     def test_history_detail_hides_placeholder_model_used(self) -> None:
         """Placeholder model values should be normalized to None in detail response."""
         result = self._build_result()

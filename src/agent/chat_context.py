@@ -11,6 +11,15 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from src.config import (
     get_agent_context_compression_preset,
     get_effective_agent_primary_model,
+    get_effective_agent_models_to_try,
+)
+from src.agent.provider_trace import (
+    TRACE_MODEL_KEY,
+    TRACE_PROVIDER_KEY,
+    TraceDiagnostics,
+    resolved_provider_namespace,
+    strip_trace_metadata,
+    trace_model_matches,
 )
 from src.storage import get_db, persist_llm_usage
 
@@ -43,6 +52,23 @@ class VisibleMessage:
     role: str
     content: str
     created_at: Any = None
+
+
+@dataclass(frozen=True)
+class VisibleHistoryState:
+    """Id-aware visible history state used for summary and trace splicing."""
+
+    messages: List[Dict[str, Any]]
+    visible_ids: set[int]
+    visible_tokens: int
+
+
+@dataclass(frozen=True)
+class AgentChatContextBundle:
+    """Prepared context messages for a single-agent chat request."""
+
+    context_messages: List[Dict[str, Any]]
+    diagnostics: Dict[str, Any]
 
 
 def build_summary_message(summary_text: str) -> Dict[str, str]:
@@ -95,13 +121,117 @@ def build_visible_chat_history(
     config: Any,
 ) -> List[Dict[str, str]]:
     """Return visible chat history according to the compression state table."""
+    state = _build_visible_history_state(session_id, llm_adapter, config)
+    return _strip_internal_message_ids(state.messages)
+
+
+def build_agent_chat_context_bundle(
+    session_id: str,
+    llm_adapter: Any,
+    config: Any,
+) -> AgentChatContextBundle:
+    """Return id-spliced visible history plus provider trace messages.
+
+    The bundle excludes the current user turn.  ``AgentExecutor.chat`` appends
+    factual context and the current user after these messages, preserving the
+    existing request assembly order.
+    """
+    state = _build_visible_history_state(session_id, llm_adapter, config)
+    diagnostics = TraceDiagnostics(visible_tokens=state.visible_tokens)
+    db = get_db()
+    candidate_models = get_effective_agent_models_to_try(config)
+    if not candidate_models:
+        candidate_models = [get_effective_agent_primary_model(config)]
+    candidate_trace_targets = _build_trace_match_targets(candidate_models, config)
+    turns = db.get_agent_provider_turns(session_id, must_roundtrip_only=True)
+    traces_by_anchor: Dict[int, List[Dict[str, Any]]] = {}
+    pending_trace_tokens = 0
+    pending_trace_count = 0
+
+    for turn in turns:
+        if not any(
+            trace_model_matches(
+                turn.get("provider"),
+                turn.get("model"),
+                model,
+                current_provider=provider,
+            )
+            for model, provider in candidate_trace_targets
+        ):
+            diagnostics.model_mismatch += 1
+            diagnostics.dropped_trace_count += 1
+            diagnostics.trace_dropped_reason = diagnostics.trace_dropped_reason or "model_mismatch"
+            continue
+        anchor_id = _coerce_int(turn.get("anchor_assistant_message_id"), default=0)
+        if anchor_id <= 0 or anchor_id not in state.visible_ids:
+            diagnostics.anchor_summarized += 1
+            diagnostics.dropped_trace_count += 1
+            diagnostics.trace_dropped_reason = diagnostics.trace_dropped_reason or "anchor_summarized"
+            continue
+        trace_messages = _restore_trace_metadata(
+            turn.get("messages") or [],
+            provider=turn.get("provider"),
+            model=turn.get("model"),
+        )
+        if not trace_messages:
+            continue
+        pending_trace_count += 1
+        pending_trace_tokens += _coerce_int(
+            turn.get("estimated_tokens"),
+            default=estimate_messages_tokens(trace_messages, config),
+        )
+        traces_by_anchor.setdefault(anchor_id, []).extend(trace_messages)
+
+    if traces_by_anchor:
+        preset = get_agent_context_compression_preset(
+            getattr(config, "agent_context_compression_profile", None)
+        )
+        history_budget = _coerce_int(
+            getattr(config, "agent_context_history_budget_tokens", preset.history_budget_tokens),
+            default=preset.history_budget_tokens,
+        )
+        remaining_budget = history_budget - state.visible_tokens
+        if remaining_budget < pending_trace_tokens:
+            diagnostics.budget_exceeded = True
+            diagnostics.trace_dropped_reason = "budget_exceeded"
+            diagnostics.dropped_trace_count += pending_trace_count
+            traces_by_anchor = {}
+        else:
+            diagnostics.trace_injected = True
+            diagnostics.trace_tokens = pending_trace_tokens
+
+    merged: List[Dict[str, Any]] = []
+    for msg in state.messages:
+        msg_id = _coerce_int(msg.get("_message_id"), default=0)
+        if msg_id and msg_id in traces_by_anchor:
+            merged.extend(traces_by_anchor[msg_id])
+        merged.append(msg)
+
+    return AgentChatContextBundle(
+        context_messages=_strip_internal_message_ids(merged),
+        diagnostics=diagnostics.to_dict(),
+    )
+
+
+def _build_visible_history_state(
+    session_id: str,
+    llm_adapter: Any,
+    config: Any,
+) -> VisibleHistoryState:
+    """Return visible history with private ``_message_id`` anchors."""
     db = get_db()
     if not getattr(config, "agent_context_compression_enabled", False):
-        return db.get_conversation_history(session_id, limit=20)
+        selected = _load_visible_messages(session_id, limit=20)
+        messages = _to_chat_messages(selected, include_ids=True)
+        return VisibleHistoryState(
+            messages=messages,
+            visible_ids={msg.id for msg in selected},
+            visible_tokens=estimate_messages_tokens(_strip_internal_message_ids(messages), config),
+        )
 
     visible_messages = _load_visible_messages(session_id)
     if not visible_messages:
-        return []
+        return VisibleHistoryState(messages=[], visible_ids=set(), visible_tokens=0)
 
     summary_record = db.get_conversation_summary(session_id)
     previous_summary = (summary_record or {}).get("summary") or ""
@@ -122,14 +252,18 @@ def build_visible_chat_history(
     protected_ids = {msg.id for msg in protected_tail}
     uncovered_messages = [msg for msg in visible_messages if msg.id > covered_message_id]
     candidate = (
-        [build_summary_message(previous_summary)] + _to_chat_messages(uncovered_messages)
+        [build_summary_message(previous_summary)] + _to_chat_messages(uncovered_messages, include_ids=True)
         if previous_summary
-        else _to_chat_messages(visible_messages)
+        else _to_chat_messages(visible_messages, include_ids=True)
     )
-    candidate_tokens = estimate_messages_tokens(candidate, config)
+    candidate_tokens = estimate_messages_tokens(_strip_internal_message_ids(candidate), config)
 
     if candidate_tokens <= trigger_tokens:
-        return candidate
+        return VisibleHistoryState(
+            messages=candidate,
+            visible_ids={msg.id for msg in visible_messages if msg.id > covered_message_id or not previous_summary},
+            visible_tokens=candidate_tokens,
+        )
 
     to_summarize = [
         msg
@@ -142,12 +276,22 @@ def build_visible_chat_history(
                 "Conversation context compression skipped for session %s: protected tail exceeds trigger",
                 session_id,
             )
-            return [build_summary_message(previous_summary)] + _to_chat_messages(protected_tail)
+            messages = [build_summary_message(previous_summary)] + _to_chat_messages(protected_tail, include_ids=True)
+            return VisibleHistoryState(
+                messages=messages,
+                visible_ids={msg.id for msg in protected_tail},
+                visible_tokens=estimate_messages_tokens(_strip_internal_message_ids(messages), config),
+            )
         logger.warning(
             "Conversation context compression skipped for session %s: all visible history is protected",
             session_id,
         )
-        return _to_chat_messages(visible_messages)
+        messages = _to_chat_messages(visible_messages, include_ids=True)
+        return VisibleHistoryState(
+            messages=messages,
+            visible_ids={msg.id for msg in visible_messages},
+            visible_tokens=estimate_messages_tokens(_strip_internal_message_ids(messages), config),
+        )
 
     logger.info(
         "Conversation context compression summarizing session %s: %d messages, candidate_tokens=%d, trigger=%d",
@@ -178,19 +322,34 @@ def build_visible_chat_history(
             getattr(response, "model", "") or get_effective_agent_primary_model(config) or "unknown",
             call_type="agent",
         )
-        return [build_summary_message(summary_text)] + _to_chat_messages(protected_tail)
+        messages = [build_summary_message(summary_text)] + _to_chat_messages(protected_tail, include_ids=True)
+        return VisibleHistoryState(
+            messages=messages,
+            visible_ids={msg.id for msg in protected_tail},
+            visible_tokens=estimate_messages_tokens(_strip_internal_message_ids(messages), config),
+        )
 
     logger.warning(
         "Conversation context compression failed for session %s; using state-table fallback",
         session_id,
     )
     if previous_summary:
-        return candidate
-    return db.get_conversation_history(session_id, limit=20)
+        return VisibleHistoryState(
+            messages=candidate,
+            visible_ids={msg.id for msg in visible_messages if msg.id > covered_message_id},
+            visible_tokens=candidate_tokens,
+        )
+    selected = visible_messages[-20:]
+    messages = _to_chat_messages(selected, include_ids=True)
+    return VisibleHistoryState(
+        messages=messages,
+        visible_ids={msg.id for msg in selected},
+        visible_tokens=estimate_messages_tokens(_strip_internal_message_ids(messages), config),
+    )
 
 
-def _load_visible_messages(session_id: str) -> List[VisibleMessage]:
-    rows = get_db().get_visible_conversation_messages(session_id)
+def _load_visible_messages(session_id: str, *, limit: Optional[int] = None) -> List[VisibleMessage]:
+    rows = get_db().get_visible_conversation_messages(session_id, limit=limit)
     messages = []
     for row in rows:
         role = str(row.get("role") or "")
@@ -253,8 +412,57 @@ def _generate_summary(
     return content, response
 
 
-def _to_chat_messages(messages: Iterable[VisibleMessage]) -> List[Dict[str, str]]:
-    return [{"role": msg.role, "content": msg.content} for msg in messages]
+def _to_chat_messages(
+    messages: Iterable[VisibleMessage],
+    *,
+    include_ids: bool = False,
+) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    for msg in messages:
+        row: Dict[str, Any] = {"role": msg.role, "content": msg.content}
+        if include_ids:
+            row["_message_id"] = msg.id
+        result.append(row)
+    return result
+
+
+def _strip_internal_message_ids(messages: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {key: value for key, value in msg.items() if key != "_message_id"}
+        for msg in messages
+    ]
+
+
+def _restore_trace_metadata(
+    messages: Sequence[Any],
+    *,
+    provider: Any,
+    model: Any,
+) -> List[Dict[str, Any]]:
+    restored: List[Dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        clean = strip_trace_metadata(msg)
+        if clean.get("role") in {"assistant", "tool"}:
+            clean[TRACE_PROVIDER_KEY] = provider
+            clean[TRACE_MODEL_KEY] = model
+        restored.append(clean)
+    return restored
+
+
+def _build_trace_match_targets(
+    models: Sequence[str],
+    config: Any,
+) -> List[Tuple[str, str]]:
+    model_list = getattr(config, "llm_model_list", []) or []
+    targets: List[Tuple[str, str]] = []
+    for model in models:
+        normalized = str(model or "").strip()
+        if not normalized:
+            continue
+        targets.append((normalized, resolved_provider_namespace(normalized, model_list)))
+    return targets
 
 
 def _render_messages(messages: Sequence[Dict[str, Any]]) -> str:

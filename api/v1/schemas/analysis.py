@@ -126,6 +126,7 @@ class AnalysisResultResponse(BaseModel):
     stock_code: str = Field(..., description="股票代码")
     stock_name: Optional[str] = Field(None, description="股票名称")
     report: Optional[Any] = Field(None, description="分析报告")
+    diagnostic_summary: Optional[Any] = Field(None, description="运行诊断摘要")
     created_at: str = Field(..., description="创建时间")
     
     model_config = ConfigDict(json_schema_extra={

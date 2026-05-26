@@ -320,6 +320,48 @@ class AnalysisApiContractTestCase(unittest.TestCase):
             "summary",
         )
 
+    def test_get_analysis_status_preserves_queue_report_created_at_when_enriching(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        created_at = datetime(2026, 5, 21, 17, 40, 0)
+        queue = MagicMock()
+        queue.get_task.return_value = SimpleNamespace(
+            task_id="task-queue-2",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
+            progress=100,
+            result={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "report": {
+                    "meta": {"query_id": "task-queue-2", "stock_code": "600519"},
+                    "summary": {"analysis_summary": "summary"},
+                },
+            },
+            error=None,
+            original_query=None,
+            selection_source=None,
+            created_at=created_at,
+            completed_at=datetime(2026, 5, 21, 17, 45, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=({}, None),
+             ):
+            status = get_analysis_status("task-queue-2")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertEqual(status.result.created_at, created_at.isoformat())
+        self.assertEqual(
+            status.result.report["meta"]["created_at"],
+            created_at.isoformat(),
+        )
+
     def test_run_market_review_background_raises_when_report_is_empty(self) -> None:
         if analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -693,6 +735,32 @@ class AnalysisApiContractTestCase(unittest.TestCase):
 
         self.assertEqual(result["stock_name"], "Unnamed Stock")
         self.assertEqual(result["report"]["meta"]["stock_name"], "Unnamed Stock")
+
+    def test_build_analysis_response_does_not_use_model_news_summary_as_retrieval_evidence(self) -> None:
+        service = AnalysisService()
+        result = service._build_analysis_response(
+            SimpleNamespace(
+                code="600519",
+                name="贵州茅台",
+                current_price=1234.56,
+                change_pct=1.23,
+                model_used="test-model",
+                analysis_summary="summary",
+                operation_advice="hold",
+                trend_prediction="up",
+                sentiment_score=80,
+                news_summary="model generated news summary",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                get_sniper_points=lambda: {},
+            ),
+            "q1",
+            report_type="full",
+        )
+
+        news_component = result["diagnostic_summary"]["components"]["news"]
+        self.assertEqual(news_component["status"], "unknown")
 
     def test_build_analysis_report_extracts_fundamental_fields_from_snapshot(self) -> None:
         if _build_analysis_report is None:

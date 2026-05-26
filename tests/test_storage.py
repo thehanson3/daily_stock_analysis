@@ -133,6 +133,159 @@ class TestStorage(unittest.TestCase):
 
         DatabaseManager.reset_instance()
 
+    def test_conversation_message_save_returns_id(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        message_id = db.save_conversation_message("message-id-session", "user", "hello")
+
+        self.assertIsInstance(message_id, int)
+        self.assertGreater(message_id, 0)
+
+        DatabaseManager.reset_instance()
+
+    def test_provider_turn_round_trip_preserves_protocol_fields_and_flags(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        user_id = db.save_conversation_message("trace-session", "user", "question")
+        assistant_id = db.save_conversation_message("trace-session", "assistant", "final")
+        trace_messages = [
+            {
+                "role": "assistant",
+                "content": "checking",
+                "reasoning_content": "reasoning",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "name": "echo",
+                        "arguments": {"message": "hello"},
+                        "provider_specific_fields": {"thought_signature": "sig"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{\"ok\": true}"},
+        ]
+
+        turn_id = db.save_agent_provider_turn(
+            session_id="trace-session",
+            run_id="run-1",
+            provider="deepseek",
+            model="deepseek/deepseek-chat",
+            anchor_user_message_id=user_id,
+            anchor_assistant_message_id=assistant_id,
+            messages=trace_messages,
+            contains_reasoning=True,
+            contains_tool_calls=True,
+            contains_thinking_blocks=False,
+            must_roundtrip=True,
+            estimated_tokens=42,
+        )
+        rows = db.get_agent_provider_turns("trace-session")
+
+        self.assertIsInstance(turn_id, int)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["messages"], trace_messages)
+        self.assertTrue(rows[0]["contains_reasoning"])
+        self.assertTrue(rows[0]["contains_tool_calls"])
+        self.assertTrue(rows[0]["must_roundtrip"])
+        self.assertEqual(rows[0]["estimated_tokens"], 42)
+
+        DatabaseManager.reset_instance()
+
+    def test_provider_turns_do_not_appear_in_visible_or_web_messages_and_delete_with_session(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        user_id = db.save_conversation_message("trace-hidden", "user", "visible question")
+        assistant_id = db.save_conversation_message("trace-hidden", "assistant", "visible answer")
+        db.save_agent_provider_turn(
+            session_id="trace-hidden",
+            run_id="run-hidden",
+            provider="deepseek",
+            model="deepseek/deepseek-chat",
+            anchor_user_message_id=user_id,
+            anchor_assistant_message_id=assistant_id,
+            messages=[{"role": "assistant", "reasoning_content": "SECRET_REASONING", "tool_calls": []}],
+            contains_reasoning=True,
+            contains_tool_calls=True,
+            contains_thinking_blocks=False,
+            must_roundtrip=True,
+            estimated_tokens=5,
+        )
+
+        self.assertEqual(
+            [(m["role"], m["content"]) for m in db.get_visible_conversation_messages("trace-hidden")],
+            [("user", "visible question"), ("assistant", "visible answer")],
+        )
+        self.assertEqual(
+            [(m["role"], m["content"]) for m in db.get_conversation_history("trace-hidden")],
+            [("user", "visible question"), ("assistant", "visible answer")],
+        )
+        self.assertEqual(
+            [(m["role"], m["content"]) for m in db.get_conversation_messages("trace-hidden")],
+            [("user", "visible question"), ("assistant", "visible answer")],
+        )
+
+        deleted = db.delete_conversation_session("trace-hidden")
+
+        self.assertEqual(deleted, 2)
+        self.assertEqual(db.get_agent_provider_turns("trace-hidden"), [])
+
+        DatabaseManager.reset_instance()
+
+    def test_provider_turn_retention_is_bucketed_by_session_provider_model(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        for idx in range(5):
+            user_id = db.save_conversation_message("retention", "user", f"q{idx}")
+            assistant_id = db.save_conversation_message("retention", "assistant", f"a{idx}")
+            db.save_agent_provider_turn(
+                session_id="retention",
+                run_id=f"run-{idx}",
+                provider="deepseek",
+                model="deepseek/deepseek-chat",
+                anchor_user_message_id=user_id,
+                anchor_assistant_message_id=assistant_id,
+                messages=[{"role": "assistant", "reasoning_content": f"r{idx}", "tool_calls": [{"id": f"c{idx}", "name": "echo", "arguments": {}}]}],
+                contains_reasoning=True,
+                contains_tool_calls=True,
+                contains_thinking_blocks=False,
+                must_roundtrip=True,
+                estimated_tokens=idx + 1,
+            )
+        user_id = db.save_conversation_message("retention", "user", "other")
+        assistant_id = db.save_conversation_message("retention", "assistant", "other")
+        db.save_agent_provider_turn(
+            session_id="retention",
+            run_id="run-other",
+            provider="anthropic",
+            model="anthropic/claude-test",
+            anchor_user_message_id=user_id,
+            anchor_assistant_message_id=assistant_id,
+            messages=[{"role": "assistant", "provider_blocks": [{"type": "thinking"}], "tool_calls": [{"id": "c-other", "name": "echo", "arguments": {}}]}],
+            contains_reasoning=False,
+            contains_tool_calls=True,
+            contains_thinking_blocks=True,
+            must_roundtrip=True,
+            estimated_tokens=1,
+        )
+
+        deepseek_rows = db.get_agent_provider_turns(
+            "retention",
+            provider="deepseek",
+            model="deepseek/deepseek-chat",
+        )
+        anthropic_rows = db.get_agent_provider_turns(
+            "retention",
+            provider="anthropic",
+            model="anthropic/claude-test",
+        )
+
+        self.assertEqual(len(deepseek_rows), 3)
+        self.assertEqual([row["run_id"] for row in deepseek_rows], ["run-2", "run-3", "run-4"])
+        self.assertEqual(len(anthropic_rows), 1)
+
+        DatabaseManager.reset_instance()
+
     def test_get_visible_conversation_messages_returns_ordered_visible_content(self):
         DatabaseManager.reset_instance()
         db = DatabaseManager(db_url="sqlite:///:memory:")
@@ -148,6 +301,21 @@ class TestStorage(unittest.TestCase):
             [("user", "question"), ("assistant", "answer")],
         )
         self.assertIsInstance(messages[0]["id"], int)
+
+        DatabaseManager.reset_instance()
+
+    def test_get_visible_conversation_messages_limit_returns_ordered_tail(self):
+        DatabaseManager.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+
+        for idx in range(25):
+            db.save_conversation_message("visible-limit", "user", f"msg-{idx}")
+
+        messages = db.get_visible_conversation_messages("visible-limit", limit=20)
+
+        self.assertEqual(len(messages), 20)
+        self.assertEqual(messages[0]["content"], "msg-5")
+        self.assertEqual(messages[-1]["content"], "msg-24")
 
         DatabaseManager.reset_instance()
 

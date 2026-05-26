@@ -11,9 +11,11 @@ from src.agent.chat_context import (  # noqa: E402
     SUMMARY_USER_PREFIX,
     VisibleMessage,
     _split_protected_tail,
+    build_agent_chat_context_bundle,
     build_visible_chat_history,
     estimate_text_tokens,
 )
+from src.agent.llm_adapter import LLMToolAdapter  # noqa: E402
 from src.config import Config  # noqa: E402
 from src.storage import DatabaseManager  # noqa: E402
 
@@ -97,6 +99,263 @@ def test_existing_summary_under_trigger_returns_summary_and_uncovered_messages()
     assert history[0]["role"] == "user"
     assert history[0]["content"].startswith(SUMMARY_USER_PREFIX)
     assert [msg["content"] for msg in history[1:]] == ["u2", "a2"]
+
+
+def test_bundle_splices_provider_trace_before_visible_final_assistant() -> None:
+    db = _reset_db()
+    session_id = "chat-trace-splice"
+    user_id = db.save_conversation_message(session_id, "user", "u1")
+    assistant_id = db.save_conversation_message(session_id, "assistant", "a1-final")
+    db.save_agent_provider_turn(
+        session_id=session_id,
+        run_id="run-1",
+        provider="openai",
+        model="openai/test-model",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[
+            {
+                "role": "assistant",
+                "content": "checking",
+                "reasoning_content": "r1",
+                "tool_calls": [{"id": "call_1", "name": "echo", "arguments": {"message": "x"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool-result"},
+        ],
+        contains_reasoning=True,
+        contains_tool_calls=True,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=10,
+    )
+
+    bundle = build_agent_chat_context_bundle(session_id, MagicMock(), _config(enabled=False))
+
+    assert [msg["role"] for msg in bundle.context_messages] == ["user", "assistant", "tool", "assistant"]
+    assert bundle.context_messages[0]["content"] == "u1"
+    assert bundle.context_messages[1]["reasoning_content"] == "r1"
+    assert bundle.context_messages[2]["tool_call_id"] == "call_1"
+    assert bundle.context_messages[3]["content"] == "a1-final"
+    assert sum(1 for msg in bundle.context_messages if msg.get("content") == "a1-final") == 1
+    assert bundle.diagnostics["trace_injected"] is True
+
+
+def test_bundle_drops_trace_on_model_mismatch_budget_and_summarized_anchor() -> None:
+    db = _reset_db()
+    mismatch_session = "chat-trace-mismatch"
+    user_id = db.save_conversation_message(mismatch_session, "user", "u1")
+    assistant_id = db.save_conversation_message(mismatch_session, "assistant", "a1")
+    db.save_agent_provider_turn(
+        session_id=mismatch_session,
+        run_id="run-mismatch",
+        provider="deepseek",
+        model="deepseek/deepseek-chat",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[{"role": "assistant", "reasoning_content": "r", "tool_calls": [{"id": "c", "name": "echo", "arguments": {}}]}],
+        contains_reasoning=True,
+        contains_tool_calls=True,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=10,
+    )
+
+    mismatch = build_agent_chat_context_bundle(mismatch_session, MagicMock(), _config(enabled=False))
+
+    assert mismatch.diagnostics["model_mismatch"] == 1
+    assert mismatch.diagnostics["trace_injected"] is False
+    assert all("reasoning_content" not in msg for msg in mismatch.context_messages)
+
+    budget_session = "chat-trace-budget"
+    user_id = db.save_conversation_message(budget_session, "user", "u1")
+    assistant_id = db.save_conversation_message(budget_session, "assistant", "a1")
+    db.save_agent_provider_turn(
+        session_id=budget_session,
+        run_id="run-budget",
+        provider="openai",
+        model="openai/test-model",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[{"role": "assistant", "reasoning_content": "r", "tool_calls": [{"id": "c", "name": "echo", "arguments": {}}]}],
+        contains_reasoning=True,
+        contains_tool_calls=True,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=999999,
+    )
+
+    budget = build_agent_chat_context_bundle(budget_session, MagicMock(), _config(enabled=False))
+
+    assert budget.diagnostics["budget_exceeded"] is True
+    assert budget.diagnostics["trace_injected"] is False
+    assert all("reasoning_content" not in msg for msg in budget.context_messages)
+
+    summarized_session = "chat-trace-summary-anchor"
+    user_id = db.save_conversation_message(summarized_session, "user", "u1")
+    assistant_id = db.save_conversation_message(summarized_session, "assistant", "a1")
+    db.save_conversation_message(summarized_session, "user", "u2")
+    db.upsert_conversation_summary(summarized_session, "old summary", assistant_id, 2, 10)
+    db.save_agent_provider_turn(
+        session_id=summarized_session,
+        run_id="run-summary",
+        provider="openai",
+        model="openai/test-model",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[{"role": "assistant", "reasoning_content": "r", "tool_calls": [{"id": "c", "name": "echo", "arguments": {}}]}],
+        contains_reasoning=True,
+        contains_tool_calls=True,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=10,
+    )
+
+    summarized = build_agent_chat_context_bundle(summarized_session, MagicMock(), _config(trigger=999999))
+
+    assert summarized.diagnostics["anchor_summarized"] == 1
+    assert summarized.diagnostics["trace_injected"] is False
+    assert all("reasoning_content" not in msg for msg in summarized.context_messages)
+
+
+def test_bundle_injects_trace_for_configured_fallback_model_with_trace_metadata() -> None:
+    db = _reset_db()
+    session_id = "chat-trace-fallback-model"
+    user_id = db.save_conversation_message(session_id, "user", "u1")
+    assistant_id = db.save_conversation_message(session_id, "assistant", "a1-final")
+    db.save_agent_provider_turn(
+        session_id=session_id,
+        run_id="run-fallback",
+        provider="deepseek",
+        model="deepseek/deepseek-chat",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[
+            {
+                "role": "assistant",
+                "content": "checking",
+                "reasoning_content": "r",
+                "tool_calls": [{"id": "call_1", "name": "echo", "arguments": {}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool-result"},
+        ],
+        contains_reasoning=True,
+        contains_tool_calls=True,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=10,
+    )
+    config = _config(enabled=False)
+    config.agent_litellm_model = "openai/test-model"
+    config.litellm_model = "openai/test-model"
+    config.litellm_fallback_models = ["deepseek/deepseek-chat"]
+
+    bundle = build_agent_chat_context_bundle(session_id, MagicMock(), config)
+
+    assert bundle.diagnostics["trace_injected"] is True
+    assistant_trace = bundle.context_messages[1]
+    assert assistant_trace["role"] == "assistant"
+    assert assistant_trace["reasoning_content"] == "r"
+    assert assistant_trace["_trace_provider"] == "deepseek"
+    assert assistant_trace["_trace_model"] == "deepseek/deepseek-chat"
+    tool_trace = bundle.context_messages[2]
+    assert tool_trace["role"] == "tool"
+    assert tool_trace["_trace_provider"] == "deepseek"
+    assert tool_trace["_trace_model"] == "deepseek/deepseek-chat"
+
+
+def test_bundle_trace_is_replayed_only_for_matching_fallback_attempt() -> None:
+    db = _reset_db()
+    session_id = "chat-trace-fallback-attempt"
+    user_id = db.save_conversation_message(session_id, "user", "u1")
+    assistant_id = db.save_conversation_message(session_id, "assistant", "a1-final")
+    db.save_agent_provider_turn(
+        session_id=session_id,
+        run_id="run-fallback-attempt",
+        provider="deepseek",
+        model="deepseek/deepseek-chat",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[
+            {
+                "role": "assistant",
+                "content": "checking",
+                "reasoning_content": "r",
+                "tool_calls": [{"id": "call_1", "name": "echo", "arguments": {}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool-result"},
+        ],
+        contains_reasoning=True,
+        contains_tool_calls=True,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=10,
+    )
+    config = _config(enabled=False)
+    config.agent_litellm_model = "openai/test-model"
+    config.litellm_model = "openai/test-model"
+    config.litellm_fallback_models = ["deepseek/deepseek-chat"]
+    adapter = LLMToolAdapter.__new__(LLMToolAdapter)
+    adapter._config = config
+
+    bundle = build_agent_chat_context_bundle(session_id, MagicMock(), config)
+    primary_messages = adapter._convert_messages(bundle.context_messages, target_model="openai/test-model")
+    fallback_messages = adapter._convert_messages(bundle.context_messages, target_model="deepseek/deepseek-chat")
+
+    assert bundle.diagnostics["trace_injected"] is True
+    assert [msg["role"] for msg in primary_messages] == ["user", "assistant"]
+    assert primary_messages[-1]["content"] == "a1-final"
+    assert all(msg.get("tool_call_id") != "call_1" for msg in primary_messages)
+    assert [msg["role"] for msg in fallback_messages] == ["user", "assistant", "tool", "assistant"]
+    assert fallback_messages[1]["reasoning_content"] == "r"
+    assert fallback_messages[2]["tool_call_id"] == "call_1"
+    assert fallback_messages[-1]["content"] == "a1-final"
+
+
+def test_bundle_matches_slashless_router_alias_fallback_by_resolved_provider() -> None:
+    db = _reset_db()
+    session_id = "chat-trace-router-alias"
+    user_id = db.save_conversation_message(session_id, "user", "u1")
+    assistant_id = db.save_conversation_message(session_id, "assistant", "a1-final")
+    db.save_agent_provider_turn(
+        session_id=session_id,
+        run_id="run-router-alias",
+        provider="openai",
+        model="gpt4o",
+        anchor_user_message_id=user_id,
+        anchor_assistant_message_id=assistant_id,
+        messages=[
+            {
+                "role": "assistant",
+                "content": "checking",
+                "reasoning_content": "r",
+                "tool_calls": [{"id": "call_1", "name": "echo", "arguments": {}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool-result"},
+        ],
+        contains_reasoning=True,
+        contains_tool_calls=True,
+        contains_thinking_blocks=False,
+        must_roundtrip=True,
+        estimated_tokens=10,
+    )
+    config = _config(enabled=False)
+    config.agent_litellm_model = "anthropic/claude-test"
+    config.litellm_model = "anthropic/claude-test"
+    config.litellm_fallback_models = ["gpt4o"]
+    config.llm_model_list = [
+        {
+            "model_name": "gpt4o",
+            "litellm_params": {"model": "openai/gpt-4o-mini"},
+        }
+    ]
+
+    bundle = build_agent_chat_context_bundle(session_id, MagicMock(), config)
+
+    assert bundle.diagnostics["trace_injected"] is True
+    assert bundle.diagnostics["model_mismatch"] == 0
+    assistant_trace = bundle.context_messages[1]
+    assert assistant_trace["_trace_provider"] == "openai"
+    assert assistant_trace["_trace_model"] == "gpt4o"
 
 
 def test_over_trigger_generates_summary_and_updates_covered_message_id() -> None:

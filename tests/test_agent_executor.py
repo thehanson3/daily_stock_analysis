@@ -17,6 +17,7 @@ import unittest
 import sys
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -31,6 +32,8 @@ from src.agent.executor import AgentExecutor, AgentResult
 from src.agent.llm_adapter import LLMResponse, ToolCall
 from src.agent.runner import parse_dashboard_json, run_agent_loop, serialize_tool_result
 from src.agent.tools.registry import ToolRegistry, ToolDefinition, ToolParameter
+from src.config import Config
+from src.storage import DatabaseManager
 
 
 # ============================================================
@@ -104,7 +107,10 @@ class TestAgentExecutor(unittest.TestCase):
         ]
 
         with patch.object(executor, "_run_loop", side_effect=fake_run_loop):
-            with patch("src.agent.executor.build_visible_chat_history", return_value=compressed_history):
+            with patch(
+                "src.agent.executor.build_agent_chat_context_bundle",
+                return_value=SimpleNamespace(context_messages=compressed_history, diagnostics={}),
+            ):
                 with patch("src.agent.conversation.conversation_manager.get_or_create"):
                     with patch("src.agent.conversation.conversation_manager.add_message"):
                         executor.chat(
@@ -234,6 +240,149 @@ class TestAgentExecutor(unittest.TestCase):
         self.assertEqual(len(result.tool_calls_log), 1)
         self.assertEqual(result.tool_calls_log[0]["tool"], "echo")
         self.assertTrue(result.tool_calls_log[0]["success"])
+
+    def test_run_agent_loop_replays_reasoning_and_provider_specific_fields_on_followup_call(self):
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.side_effect = [
+            LLMResponse(
+                content="Checking.",
+                tool_calls=[
+                    ToolCall(
+                        id="call_reason",
+                        name="echo",
+                        arguments={"message": "hello"},
+                        thought_signature="sig-1",
+                        provider_specific_fields={"thought_signature": "sig-1", "extra": "keep"},
+                    )
+                ],
+                reasoning_content="deepseek reasoning",
+                usage={"total_tokens": 10},
+                provider="deepseek",
+                model="deepseek/deepseek-chat",
+            ),
+            LLMResponse(
+                content=json.dumps(SAMPLE_DASHBOARD, ensure_ascii=False),
+                tool_calls=[],
+                usage={"total_tokens": 20},
+                provider="deepseek",
+                model="deepseek/deepseek-chat",
+            ),
+        ]
+
+        result = run_agent_loop(
+            messages=[{"role": "user", "content": "Analyze"}],
+            tool_registry=registry,
+            llm_adapter=adapter,
+            max_steps=2,
+        )
+
+        self.assertTrue(result.success)
+        followup_messages = adapter.call_with_tools.call_args_list[1].args[0]
+        assistant_msg = followup_messages[-2]
+        tool_msg = followup_messages[-1]
+        self.assertEqual(assistant_msg["role"], "assistant")
+        self.assertEqual(assistant_msg["reasoning_content"], "deepseek reasoning")
+        self.assertEqual(assistant_msg["_trace_provider"], "deepseek")
+        self.assertEqual(assistant_msg["_trace_model"], "deepseek/deepseek-chat")
+        self.assertEqual(
+            assistant_msg["tool_calls"][0]["provider_specific_fields"],
+            {"thought_signature": "sig-1", "extra": "keep"},
+        )
+        self.assertEqual(assistant_msg["tool_calls"][0]["thought_signature"], "sig-1")
+        self.assertEqual(tool_msg["role"], "tool")
+        self.assertEqual(tool_msg["tool_call_id"], "call_reason")
+
+    def test_chat_persists_single_provider_trace_and_reinjects_without_duplication(self):
+        DatabaseManager.reset_instance()
+        Config.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter._config = SimpleNamespace(
+            agent_context_compression_enabled=False,
+            agent_context_compression_profile="balanced",
+            agent_context_compression_trigger_tokens=999999,
+            agent_context_protected_turns=1,
+            llm_model_list=[],
+            agent_litellm_model="deepseek/deepseek-chat",
+            litellm_model="deepseek/deepseek-chat",
+            litellm_fallback_models=[],
+        )
+        adapter.call_with_tools.side_effect = [
+            LLMResponse(
+                content="Checking.",
+                tool_calls=[ToolCall(id="call_1", name="echo", arguments={"message": "first"})],
+                reasoning_content="r1",
+                usage={"total_tokens": 10},
+                provider="deepseek",
+                model="deepseek/deepseek-chat",
+            ),
+            LLMResponse(
+                content="first final",
+                tool_calls=[],
+                usage={"total_tokens": 5},
+                provider="deepseek",
+                model="deepseek/deepseek-chat",
+            ),
+            LLMResponse(
+                content="second final",
+                tool_calls=[],
+                usage={"total_tokens": 5},
+                provider="deepseek",
+                model="deepseek/deepseek-chat",
+            ),
+        ]
+
+        executor = AgentExecutor(registry, adapter, max_steps=3)
+
+        first = executor.chat("first question", "executor-trace")
+        second = executor.chat("second question", "executor-trace")
+
+        self.assertTrue(first.success)
+        self.assertTrue(second.success)
+        self.assertEqual(len(db.get_agent_provider_turns("executor-trace")), 1)
+        second_request_messages = adapter.call_with_tools.call_args_list[2].args[0]
+        ordered_roles = [msg["role"] for msg in second_request_messages[-5:]]
+        self.assertEqual(ordered_roles, ["user", "assistant", "tool", "assistant", "user"])
+        self.assertEqual(second_request_messages[-4]["reasoning_content"], "r1")
+        self.assertEqual(second_request_messages[-3]["tool_call_id"], "call_1")
+        self.assertEqual(second_request_messages[-2]["content"], "first final")
+        self.assertEqual(second_request_messages[-1]["content"], "second question")
+
+        DatabaseManager.reset_instance()
+        Config.reset_instance()
+
+    def test_persist_provider_trace_logs_save_failure_without_failing_chat(self):
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        executor = AgentExecutor(registry, adapter, max_steps=2)
+        messages = [
+            {"role": "user", "content": "question"},
+            {
+                "role": "assistant",
+                "content": "checking",
+                "_trace_provider": "deepseek",
+                "_trace_model": "deepseek/deepseek-chat",
+                "reasoning_content": "r1",
+                "tool_calls": [{"id": "call_1", "name": "echo", "arguments": {"message": "x"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool-result"},
+        ]
+        db = SimpleNamespace(save_agent_provider_turn=MagicMock(side_effect=RuntimeError("db down")))
+
+        with patch("src.agent.executor.get_db", return_value=db):
+            with self.assertLogs("src.agent.executor", level="WARNING") as logs:
+                executor._persist_provider_trace(
+                    session_id="executor-trace-fail-open",
+                    run_id="run-1",
+                    messages=messages,
+                    baseline_len=1,
+                    user_message_id=10,
+                    assistant_message_id=11,
+                )
+
+        self.assertIn("Provider trace persistence failed", "\n".join(logs.output))
 
     def test_multiple_tool_calls_in_one_step(self):
         """Agent requests multiple tool calls in a single response."""

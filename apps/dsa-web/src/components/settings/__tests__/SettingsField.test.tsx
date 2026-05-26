@@ -118,13 +118,80 @@ describe('SettingsField', () => {
       />
     );
 
-    const select = screen.getByLabelText('NOTIFICATION_MIN_SEVERITY');
-    expect(screen.getByRole('option', { name: 'Not set' })).not.toBeDisabled();
+    const select = screen.getByLabelText('最小通知级别');
+    expect(screen.getByRole('option', { name: '未设置' })).not.toBeDisabled();
     expect(screen.queryByRole('option', { name: '请选择' })).not.toBeInTheDocument();
 
     fireEvent.change(select, { target: { value: '' } });
 
     expect(onChange).toHaveBeenCalledWith('NOTIFICATION_MIN_SEVERITY', '');
+  });
+
+  it('renders localized labels for real system config select options', () => {
+    const selectCases = [
+      {
+        key: 'NEWS_STRATEGY_PROFILE',
+        category: 'data_source',
+        options: ['ultra_short', 'short', 'medium', 'long'],
+        expectedLabels: ['超短线（1天）', '短期（3天）', '中期（7天）', '长期（30天）'],
+      },
+      {
+        key: 'REPORT_TYPE',
+        category: 'notification',
+        options: ['simple', 'full', 'brief'],
+        expectedLabels: ['简洁', '完整', '简报'],
+      },
+      {
+        key: 'LOG_LEVEL',
+        category: 'system',
+        options: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        expectedLabels: ['调试', '信息', '警告', '错误', '严重'],
+      },
+      {
+        key: 'MARKET_REVIEW_REGION',
+        category: 'system',
+        options: ['cn', 'hk', 'us', 'both'],
+        expectedLabels: ['A 股', '港股', '美股', '全部市场'],
+      },
+    ] as const;
+
+    selectCases.forEach(({ key, category, options, expectedLabels }) => {
+      const { unmount } = render(
+        <SettingsField
+          item={{
+            key,
+            value: options[0],
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key,
+              title: key,
+              category,
+              dataType: 'string',
+              uiControl: 'select',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [...options],
+              validation: {},
+              displayOrder: 1,
+            },
+          }}
+          value={options[0]}
+          onChange={() => undefined}
+        />
+      );
+
+      expectedLabels.forEach((label) => {
+        expect(screen.getByRole('option', { name: label })).toBeInTheDocument();
+      });
+
+      options.forEach((rawOption) => {
+        expect(screen.queryByRole('option', { name: rawOption })).not.toBeInTheDocument();
+      });
+
+      unmount();
+    });
   });
 
   it('renders context compression profile options with Chinese labels', () => {

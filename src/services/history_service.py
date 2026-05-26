@@ -30,6 +30,7 @@ from src.report_language import (
     normalize_report_language,
 )
 from src.storage import DatabaseManager
+from src.services.run_diagnostics import build_run_diagnostic_summary
 from src.utils.data_processing import normalize_model_used, parse_json_field
 
 if TYPE_CHECKING:
@@ -198,6 +199,46 @@ class HistoryService:
         except Exception as e:
             logger.error(f"resolve_and_get_news failed for {record_id}: {e}", exc_info=True)
             return []
+
+    def resolve_and_get_diagnostics(self, record_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Resolve record_id and return a user-facing run diagnostic summary.
+
+        Legacy records without diagnostic snapshots return an ``unknown``
+        summary instead of failing. Storage and JSON parsing errors are
+        propagated so callers can surface backend failures accurately.
+        """
+        record = self._resolve_record(record_id)
+        if not record:
+            return None
+
+        return build_run_diagnostic_summary(
+            context_snapshot=self._parse_diagnostic_json_field(
+                getattr(record, "context_snapshot", None),
+                "context_snapshot",
+            ),
+            raw_result=self._parse_diagnostic_json_field(
+                getattr(record, "raw_result", None),
+                "raw_result",
+            ),
+            report_saved=True,
+            query_id=getattr(record, "query_id", None),
+            stock_code=getattr(record, "code", None),
+        )
+
+    @staticmethod
+    def _parse_diagnostic_json_field(value: Any, field_name: str) -> Any:
+        """Strict JSON parser for persisted diagnostic inputs."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            if not value.strip():
+                return None
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise ValueError(f"invalid {field_name} JSON") from exc
+        return value
 
     def get_history_detail_by_id(self, record_id: int) -> Optional[Dict[str, Any]]:
         """

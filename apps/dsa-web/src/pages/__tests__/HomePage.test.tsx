@@ -26,6 +26,7 @@ vi.mock('../../api/history', () => ({
     deleteRecords: vi.fn(),
     getNews: vi.fn().mockResolvedValue({ total: 0, items: [] }),
     getMarkdown: vi.fn().mockResolvedValue('# report'),
+    getDiagnostics: vi.fn(),
   },
 }));
 
@@ -125,6 +126,13 @@ describe('HomePage', () => {
       tasks: [],
     });
     vi.mocked(agentApi.getSkills).mockResolvedValue({ skills: [], default_skill_id: '' });
+    vi.mocked(historyApi.getDiagnostics).mockResolvedValue({
+      status: 'unknown',
+      statusLabel: '未知',
+      reason: '旧报告或诊断证据不足，无法判断本次运行状态',
+      components: {},
+      copyText: 'data_status: unknown',
+    });
     vi.mocked(systemConfigApi.getSetupStatus).mockResolvedValue({
       isComplete: true,
       readyForSmoke: true,

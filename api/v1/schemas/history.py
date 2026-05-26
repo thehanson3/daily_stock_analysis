@@ -9,7 +9,7 @@
 2. 定义分析报告完整模型
 """
 
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -198,5 +198,43 @@ class MarkdownReportResponse(BaseModel):
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "content": "# 📊 贵州茅台 (600519) 分析报告\n\n> 分析日期：**2024-01-01**\n\n..."
+        }
+    })
+
+
+class RunDiagnosticComponent(BaseModel):
+    """单个运行诊断组件摘要。"""
+
+    key: str = Field(..., description="组件键")
+    label: str = Field(..., description="组件显示名称")
+    status: str = Field(..., description="组件状态：ok/degraded/failed/unknown/not_configured/skipped")
+    message: str = Field(..., description="用户可读摘要")
+    details: Optional[Dict[str, Any]] = Field(None, description="折叠展示的诊断细节")
+
+
+class RunDiagnosticSummaryResponse(BaseModel):
+    """历史报告运行诊断摘要。"""
+
+    trace_id: Optional[str] = Field(None, description="诊断 trace ID")
+    task_id: Optional[str] = Field(None, description="任务 ID")
+    query_id: Optional[str] = Field(None, description="分析 query ID")
+    stock_code: Optional[str] = Field(None, description="股票代码")
+    trigger_source: Optional[str] = Field(None, description="触发来源")
+    status: str = Field(..., description="总体状态：normal/degraded/failed/unknown")
+    status_label: str = Field(..., description="总体状态中文标签")
+    reason: str = Field(..., description="最主要的诊断原因")
+    components: Dict[str, RunDiagnosticComponent] = Field(default_factory=dict, description="关键链路诊断组件")
+    copy_text: str = Field(..., description="可复制的脱敏排障文本")
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "trace_id": "task_abc123",
+            "query_id": "task_abc123",
+            "stock_code": "600519",
+            "status": "degraded",
+            "status_label": "部分降级",
+            "reason": "实时行情失败：timeout",
+            "components": {},
+            "copy_text": "trace_id: task_abc123\nstock_code: 600519\n...",
         }
     })

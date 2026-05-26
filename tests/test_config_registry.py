@@ -151,6 +151,37 @@ class TestAstrBotFieldsRegistered(unittest.TestCase):
 class TestSettingsHelpMetadata(unittest.TestCase):
     """Field help metadata should be available for covered settings help slices."""
 
+    _AI_MODEL_HIDDEN_KEYS = {
+        "LLM_CHANNELS",
+        "LLM_TEMPERATURE",
+        "LITELLM_MODEL",
+        "AGENT_LITELLM_MODEL",
+        "LITELLM_FALLBACK_MODELS",
+        "AIHUBMIX_KEY",
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_API_KEYS",
+        "GEMINI_API_KEY",
+        "GEMINI_API_KEYS",
+        "GEMINI_MODEL",
+        "GEMINI_MODEL_FALLBACK",
+        "GEMINI_TEMPERATURE",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_API_KEYS",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_TEMPERATURE",
+        "ANTHROPIC_MAX_TOKENS",
+        "OPENAI_API_KEY",
+        "OPENAI_API_KEYS",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL",
+        "OPENAI_VISION_MODEL",
+        "OPENAI_TEMPERATURE",
+        "VISION_MODEL",
+    }
+    _SYSTEM_HIDDEN_KEYS = {
+        "ADMIN_AUTH_ENABLED",
+    }
+
     _HELP_KEYS = (
         "STOCK_LIST",
         "LITELLM_MODEL",
@@ -167,6 +198,61 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         "EMAIL_RECEIVERS",
         "SCHEDULE_TIME",
         "ADMIN_AUTH_ENABLED",
+        # PR3 Phase 1: Agent + Event Alert
+        "AGENT_MODE",
+        "AGENT_MAX_STEPS",
+        "AGENT_SKILLS",
+        "AGENT_SKILL_DIR",
+        "AGENT_NL_ROUTING",
+        "AGENT_ARCH",
+        "AGENT_ORCHESTRATOR_MODE",
+        "AGENT_ORCHESTRATOR_TIMEOUT_S",
+        "AGENT_RISK_OVERRIDE",
+        "AGENT_DEEP_RESEARCH_BUDGET",
+        "AGENT_DEEP_RESEARCH_TIMEOUT",
+        "AGENT_MEMORY_ENABLED",
+        "AGENT_SKILL_AUTOWEIGHT",
+        "AGENT_SKILL_ROUTING",
+        "AGENT_CONTEXT_COMPRESSION_ENABLED",
+        "AGENT_CONTEXT_COMPRESSION_PROFILE",
+        "AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS",
+        "AGENT_CONTEXT_PROTECTED_TURNS",
+        "AGENT_EVENT_MONITOR_ENABLED",
+        "AGENT_EVENT_MONITOR_INTERVAL_MINUTES",
+        "AGENT_EVENT_ALERT_RULES_JSON",
+        # PR3 Phase 2: Backtest
+        "BACKTEST_ENABLED",
+        "BACKTEST_EVAL_WINDOW_DAYS",
+        "BACKTEST_MIN_AGE_DAYS",
+        "BACKTEST_ENGINE_VERSION",
+        "BACKTEST_NEUTRAL_BAND_PCT",
+        # PR3 Phase 3: Report + Notification Route
+        "REPORT_SUMMARY_ONLY",
+        "REPORT_SHOW_LLM_MODEL",
+        "REPORT_TEMPLATES_DIR",
+        "REPORT_RENDERER_ENABLED",
+        "REPORT_INTEGRITY_ENABLED",
+        "REPORT_INTEGRITY_RETRY",
+        "REPORT_HISTORY_COMPARE_N",
+        "SINGLE_STOCK_NOTIFY",
+        "MERGE_EMAIL_NOTIFICATION",
+        "NOTIFICATION_REPORT_CHANNELS",
+        "NOTIFICATION_ALERT_CHANNELS",
+        "NOTIFICATION_SYSTEM_ERROR_CHANNELS",
+        "NOTIFICATION_DEDUP_TTL_SECONDS",
+        "NOTIFICATION_COOLDOWN_SECONDS",
+        "NOTIFICATION_QUIET_HOURS",
+        "NOTIFICATION_TIMEZONE",
+        "NOTIFICATION_MIN_SEVERITY",
+        "NOTIFICATION_DAILY_DIGEST_ENABLED",
+        # PR3 Phase 4: System Runtime
+        "LOG_LEVEL",
+        "DEBUG",
+        "MAX_WORKERS",
+        "ANALYSIS_DELAY",
+        "MARKET_REVIEW_ENABLED",
+        "MARKET_REVIEW_REGION",
+        "MARKET_REVIEW_COLOR_SCHEME",
     )
 
     def test_representative_fields_have_help_metadata(self):
@@ -175,6 +261,24 @@ class TestSettingsHelpMetadata(unittest.TestCase):
             self.assertTrue(field.get("help_key"), f"{key} missing help_key")
             self.assertTrue(field.get("examples"), f"{key} missing examples")
             self.assertTrue(field.get("docs"), f"{key} missing docs")
+
+    def test_web_settings_visible_fields_have_help_metadata(self):
+        """Every field rendered by SettingsField must have Help metadata."""
+
+        missing = []
+        for key in get_registered_field_keys():
+            field = get_field_definition(key)
+            if key in self._SYSTEM_HIDDEN_KEYS:
+                continue
+            if field.get("category") == "ai_model" and key in self._AI_MODEL_HIDDEN_KEYS:
+                # These legacy fields are hidden only when channel config is active;
+                # they are still visible/configurable in legacy setups.
+                pass
+
+            if not field.get("help_key") or not field.get("examples") or not field.get("docs"):
+                missing.append(key)
+
+        self.assertEqual([], missing)
 
     def test_webui_host_is_explicitly_registered(self):
         field = get_field_definition("WEBUI_HOST")
@@ -188,6 +292,7 @@ class TestSettingsHelpMetadata(unittest.TestCase):
             "SCHEDULE_RUN_IMMEDIATELY",
             "WEBUI_HOST",
             "WEBUI_PORT",
+            "LOG_LEVEL",
         )
         for key in restart_required_keys:
             field = get_field_definition(key)

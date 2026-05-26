@@ -35,7 +35,8 @@ from src.agent.protocols import (
     StageResult,
     StageStatus,
 )
-from src.config import AGENT_MAX_STEPS_DEFAULT
+from src.config import AGENT_MAX_STEPS_DEFAULT, Config
+from src.storage import DatabaseManager
 
 
 # ============================================================
@@ -912,6 +913,54 @@ class TestOrchestratorExecution(unittest.TestCase):
         build_history.assert_called_once()
         self.assertEqual(build_history.call_args.args[0], "session-1")
         self.assertIs(build_history.call_args.args[1], orch.llm_adapter)
+
+    def test_chat_does_not_read_or_write_provider_trace(self):
+        from src.agent.orchestrator import OrchestratorResult
+
+        DatabaseManager.reset_instance()
+        Config.reset_instance()
+        db = DatabaseManager(db_url="sqlite:///:memory:")
+        session_id = "multi-agent-trace-boundary"
+        user_id = db.save_conversation_message(session_id, "user", "previous question")
+        assistant_id = db.save_conversation_message(session_id, "assistant", "previous answer")
+        db.save_agent_provider_turn(
+            session_id=session_id,
+            run_id="run-existing",
+            provider="deepseek",
+            model="deepseek/deepseek-chat",
+            anchor_user_message_id=user_id,
+            anchor_assistant_message_id=assistant_id,
+            messages=[
+                {
+                    "role": "assistant",
+                    "reasoning_content": "reasoning",
+                    "tool_calls": [{"id": "call_1", "name": "echo", "arguments": {}}],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "tool-result"},
+            ],
+            contains_reasoning=True,
+            contains_tool_calls=True,
+            contains_thinking_blocks=False,
+            must_roundtrip=True,
+            estimated_tokens=10,
+        )
+
+        orch = self._make_orchestrator()
+        try:
+            with patch.object(orch, "_execute_pipeline", return_value=OrchestratorResult(success=True, content="ok")):
+                with patch("src.agent.orchestrator.build_visible_chat_history", return_value=[]) as build_history:
+                    with patch.object(db, "get_agent_provider_turns", wraps=db.get_agent_provider_turns) as get_turns:
+                        result = orch.chat("hello", session_id)
+
+            self.assertTrue(result.success)
+            build_history.assert_called_once()
+            get_turns.assert_not_called()
+            rows = db.get_agent_provider_turns(session_id)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["run_id"], "run-existing")
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
 
     def test_chat_persists_user_and_assistant_messages(self):
         from src.agent.orchestrator import OrchestratorResult

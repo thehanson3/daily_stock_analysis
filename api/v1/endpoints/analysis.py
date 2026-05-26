@@ -70,6 +70,7 @@ from src.services.task_queue import (
     DuplicateTaskError,
     TaskStatus as TaskStatusEnum,
 )
+from src.services.run_diagnostics import build_run_diagnostic_summary
 from src.utils.data_processing import (
     normalize_model_used,
     parse_json_field,
@@ -465,6 +466,7 @@ def _handle_sync_analysis(
             stock_code=result.get("stock_code", stock_code),
             stock_name=result.get("stock_name"),
             report=report.model_dump() if report else None,
+            diagnostic_summary=result.get("diagnostic_summary"),
             created_at=datetime.now().isoformat()
         )
 
@@ -728,6 +730,18 @@ def _extract_report_created_at(payload: Dict[str, Any]) -> Optional[str]:
     return _datetime_to_iso(meta.get("created_at"))
 
 
+def _prepare_report_for_task_enrichment(
+    report_data: Dict[str, Any],
+    created_at: Optional[str],
+) -> Dict[str, Any]:
+    enriched_report = dict(report_data)
+    meta = dict(enriched_report.get("meta") or {})
+    if created_at and not _datetime_to_iso(meta.get("created_at")):
+        meta["created_at"] = created_at
+    enriched_report["meta"] = meta
+    return enriched_report
+
+
 def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
     """
     Normalize an in-memory completed task result to the public API contract.
@@ -766,7 +780,10 @@ def _build_task_analysis_result(task: Any) -> AnalysisResultResponse:
         if context_snapshot is not None or fundamental_snapshot is not None:
             try:
                 report = _build_analysis_report(
-                    report_data,
+                    _prepare_report_for_task_enrichment(
+                        report_data,
+                        payload.get("created_at"),
+                    ),
                     query_id,
                     stock_code,
                     payload.get("stock_name") or getattr(task, "stock_name", None),
@@ -960,6 +977,13 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     stock_code=record.code,
                     stock_name=stock_name,
                     report=report_dict,
+                    diagnostic_summary=build_run_diagnostic_summary(
+                        context_snapshot=context_snapshot,
+                        raw_result=raw_result,
+                        report_saved=True,
+                        query_id=task_id,
+                        stock_code=record.code,
+                    ),
                     created_at=record.created_at.isoformat() if record.created_at else datetime.now().isoformat()
                 ),
                 error=None,

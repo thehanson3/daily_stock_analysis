@@ -52,6 +52,7 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.exc import IntegrityError, OperationalError
 
+from src.agent.provider_trace import PROVIDER_TRACE_RETENTION_LIMIT
 from src.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -622,6 +623,31 @@ class ConversationSummary(Base):
     estimated_tokens = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.now, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+
+class AgentProviderTurn(Base):
+    """Provider protocol trace required for thinking/tool-call roundtrip."""
+
+    __tablename__ = 'agent_provider_turns'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(100), nullable=False, index=True)
+    run_id = Column(String(64), nullable=False, index=True)
+    provider = Column(String(64), nullable=False, index=True)
+    model = Column(String(160), nullable=False, index=True)
+    anchor_user_message_id = Column(Integer, nullable=False, index=True)
+    anchor_assistant_message_id = Column(Integer, nullable=False, index=True)
+    messages_json = Column(Text, nullable=False)
+    contains_reasoning = Column(Boolean, nullable=False, default=False)
+    contains_tool_calls = Column(Boolean, nullable=False, default=False)
+    contains_thinking_blocks = Column(Boolean, nullable=False, default=False)
+    must_roundtrip = Column(Boolean, nullable=False, default=False, index=True)
+    estimated_tokens = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_agent_provider_turn_bucket', 'session_id', 'provider', 'model', 'must_roundtrip'),
+    )
 
 
 class LLMUsage(Base):
@@ -1362,6 +1388,85 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             logger.error(f"保存分析历史失败: {e}")
             return 0
 
+    def update_analysis_history_diagnostics(
+        self,
+        *,
+        query_id: str,
+        code: Optional[str] = None,
+        diagnostics: Optional[Dict[str, Any]] = None,
+        notification_runs: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
+        """
+        更新已保存分析历史的运行诊断快照。
+
+        通知结果通常在分析历史落库后才产生，因此这里仅补写
+        context_snapshot.diagnostics，不改变报告正文或其它历史字段。
+        """
+        if not query_id or (diagnostics is None and not notification_runs):
+            return 0
+
+        try:
+            def _write(session: Session) -> int:
+                conditions = [AnalysisHistory.query_id == query_id]
+                if code:
+                    conditions.append(AnalysisHistory.code == code)
+
+                row = session.execute(
+                    select(AnalysisHistory)
+                    .where(and_(*conditions))
+                    .order_by(desc(AnalysisHistory.created_at))
+                    .limit(1)
+                ).scalars().first()
+                if row is None:
+                    return 0
+
+                context_snapshot: Dict[str, Any] = {}
+                if row.context_snapshot:
+                    try:
+                        parsed = json.loads(row.context_snapshot)
+                        if isinstance(parsed, dict):
+                            context_snapshot = parsed
+                    except Exception:
+                        context_snapshot = {}
+
+                if diagnostics is not None:
+                    context_snapshot["diagnostics"] = diagnostics
+                else:
+                    existing_diagnostics = context_snapshot.get("diagnostics")
+                    if not isinstance(existing_diagnostics, dict):
+                        existing_diagnostics = {
+                            "query_id": query_id,
+                            "stock_code": code,
+                            "notification_runs": [],
+                        }
+                    runs = existing_diagnostics.get("notification_runs")
+                    if not isinstance(runs, list):
+                        runs = []
+                    trace_id = existing_diagnostics.get("trace_id")
+                    for run in notification_runs or []:
+                        if isinstance(run, dict):
+                            run_payload = dict(run)
+                            if trace_id and not run_payload.get("trace_id"):
+                                run_payload["trace_id"] = trace_id
+                            runs.append(run_payload)
+                    existing_diagnostics["notification_runs"] = runs
+                    context_snapshot["diagnostics"] = existing_diagnostics
+                row.context_snapshot = self._safe_json_dumps(context_snapshot)
+                return 1
+
+            return self._run_write_transaction(
+                f"update_analysis_history_diagnostics[{query_id}:{code or '*'}]",
+                _write,
+            )
+        except Exception as e:
+            logger.warning(
+                "更新分析历史诊断快照失败（fail-open）: query_id=%s code=%s err=%s",
+                query_id,
+                code,
+                e,
+            )
+            return 0
+
     def get_analysis_history(
         self,
         code: Optional[str] = None,
@@ -2010,7 +2115,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         digest = hashlib.md5(raw_key.encode("utf-8")).hexdigest()
         return f"no-url:{code}:{digest}"
 
-    def save_conversation_message(self, session_id: str, role: str, content: str) -> None:
+    def save_conversation_message(self, session_id: str, role: str, content: str) -> int:
         """
         保存 Agent 对话消息
         """
@@ -2021,6 +2126,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 content=content
             )
             session.add(msg)
+            session.flush()
+            return int(msg.id)
 
     def get_conversation_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         """
@@ -2035,7 +2142,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             # 倒序返回，保证时间顺序
             return [{"role": msg.role, "content": msg.content} for msg in reversed(messages)]
 
-    def get_visible_conversation_messages(self, session_id: str) -> List[Dict[str, Any]]:
+    def get_visible_conversation_messages(self, session_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Return visible user/assistant conversation messages in chronological order."""
         with self.session_scope() as session:
             stmt = (
@@ -2048,7 +2155,15 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 )
                 .order_by(ConversationMessage.created_at, ConversationMessage.id)
             )
+            if limit is not None:
+                stmt = (
+                    stmt.order_by(None)
+                    .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
+                    .limit(limit)
+                )
             messages = session.execute(stmt).scalars().all()
+            if limit is not None:
+                messages = list(reversed(messages))
             return [
                 {
                     "id": msg.id,
@@ -2079,6 +2194,135 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 "created_at": row.created_at,
                 "updated_at": row.updated_at,
             }
+
+    def save_agent_provider_turn(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        provider: str,
+        model: str,
+        anchor_user_message_id: int,
+        anchor_assistant_message_id: int,
+        messages: List[Dict[str, Any]],
+        contains_reasoning: bool,
+        contains_tool_calls: bool,
+        contains_thinking_blocks: bool,
+        must_roundtrip: bool,
+        estimated_tokens: int,
+    ) -> int:
+        """Persist one provider protocol trace and enforce per-model retention."""
+        with self.session_scope() as session:
+            row = AgentProviderTurn(
+                session_id=session_id,
+                run_id=run_id,
+                provider=provider,
+                model=model,
+                anchor_user_message_id=int(anchor_user_message_id or 0),
+                anchor_assistant_message_id=int(anchor_assistant_message_id or 0),
+                messages_json=json.dumps(messages or [], ensure_ascii=False, default=str),
+                contains_reasoning=bool(contains_reasoning),
+                contains_tool_calls=bool(contains_tool_calls),
+                contains_thinking_blocks=bool(contains_thinking_blocks),
+                must_roundtrip=bool(must_roundtrip),
+                estimated_tokens=int(estimated_tokens or 0),
+            )
+            session.add(row)
+            session.flush()
+            row_id = int(row.id)
+            if row.must_roundtrip:
+                self._trim_agent_provider_turns(
+                    session=session,
+                    session_id=session_id,
+                    provider=provider,
+                    model=model,
+                    keep=PROVIDER_TRACE_RETENTION_LIMIT,
+                )
+            return row_id
+
+    def get_agent_provider_turns(
+        self,
+        session_id: str,
+        *,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        must_roundtrip_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Return provider trace turns in chronological order."""
+        with self.session_scope() as session:
+            conditions = [AgentProviderTurn.session_id == session_id]
+            if provider:
+                conditions.append(AgentProviderTurn.provider == provider)
+            if model:
+                conditions.append(AgentProviderTurn.model == model)
+            if must_roundtrip_only:
+                conditions.append(AgentProviderTurn.must_roundtrip.is_(True))
+            stmt = (
+                select(AgentProviderTurn)
+                .where(and_(*conditions))
+                .order_by(AgentProviderTurn.created_at, AgentProviderTurn.id)
+            )
+            rows = session.execute(stmt).scalars().all()
+            result = []
+            for row in rows:
+                try:
+                    messages = json.loads(row.messages_json or "[]")
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "Invalid provider trace messages_json skipped for session %s turn %s: %s",
+                        row.session_id,
+                        row.id,
+                        exc,
+                    )
+                    messages = []
+                result.append({
+                    "id": row.id,
+                    "session_id": row.session_id,
+                    "run_id": row.run_id,
+                    "provider": row.provider,
+                    "model": row.model,
+                    "anchor_user_message_id": row.anchor_user_message_id,
+                    "anchor_assistant_message_id": row.anchor_assistant_message_id,
+                    "messages": messages if isinstance(messages, list) else [],
+                    "messages_json": row.messages_json,
+                    "contains_reasoning": row.contains_reasoning,
+                    "contains_tool_calls": row.contains_tool_calls,
+                    "contains_thinking_blocks": row.contains_thinking_blocks,
+                    "must_roundtrip": row.must_roundtrip,
+                    "estimated_tokens": row.estimated_tokens,
+                    "created_at": row.created_at,
+                })
+            return result
+
+    def _trim_agent_provider_turns(
+        self,
+        *,
+        session: Session,
+        session_id: str,
+        provider: str,
+        model: str,
+        keep: int,
+    ) -> int:
+        old_ids_stmt = (
+            select(AgentProviderTurn.id)
+            .where(
+                and_(
+                    AgentProviderTurn.session_id == session_id,
+                    AgentProviderTurn.provider == provider,
+                    AgentProviderTurn.model == model,
+                    AgentProviderTurn.must_roundtrip.is_(True),
+                )
+            )
+            .order_by(AgentProviderTurn.created_at.desc(), AgentProviderTurn.id.desc())
+            .offset(max(0, int(keep)))
+        )
+        old_ids = list(session.execute(old_ids_stmt).scalars().all())
+        if not old_ids:
+            return 0
+        result = session.execute(
+            delete(AgentProviderTurn).where(AgentProviderTurn.id.in_(old_ids))
+        )
+        return int(result.rowcount or 0)
 
     def upsert_conversation_summary(
         self,
@@ -2225,6 +2469,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             删除的消息数
         """
         with self.session_scope() as session:
+            session.execute(
+                delete(AgentProviderTurn).where(
+                    AgentProviderTurn.session_id == session_id
+                )
+            )
             session.execute(
                 delete(ConversationSummary).where(
                     ConversationSummary.session_id == session_id

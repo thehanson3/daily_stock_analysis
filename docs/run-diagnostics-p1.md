@@ -11,7 +11,6 @@
 - `data_provider/base.py` 对以下链路记录 `ProviderRun` 风格事件：
   - `daily_data`
   - `realtime_quote`
-- 检测不涉及运行时 LLM/provider 配置迁移、model 名称或 base URL 的变更，仅记录当前已发生的 provider 运行快照与 trace_id 透传。
 - 诊断记录写入内存上下文，随分析 `context_snapshot.diagnostics` 保存；旧历史记录缺少该字段时保持兼容。
 
 ## `ProviderRun` 字段

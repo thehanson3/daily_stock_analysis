@@ -23,10 +23,15 @@ from src.config import (
     get_configured_llm_models,
     get_effective_agent_models_to_try,
     get_effective_agent_primary_model,
-    resolve_litellm_wire_model,
+)
+from src.agent.provider_trace import (
+    TRACE_MODEL_KEY,
+    TRACE_PROVIDER_KEY,
+    resolved_provider_namespace,
+    trace_model_matches,
 )
 from src.llm.errors import call_litellm_with_param_recovery
-from src.llm.generation_params import apply_litellm_generation_params
+from src.llm.generation_params import apply_litellm_generation_params, resolve_litellm_wire_model
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,7 @@ class ToolCall:
     name: str
     arguments: Dict[str, Any]
     thought_signature: Optional[str] = None
+    provider_specific_fields: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -63,6 +69,7 @@ class LLMResponse:
     content: Optional[str] = None          # text response (final answer)
     tool_calls: List[ToolCall] = field(default_factory=list)  # tool calls to execute
     reasoning_content: Optional[str] = None  # Chain-of-thought (CoT) from DeepSeek thinking mode; must be passed back in multi-turn assistant messages; None for other providers
+    provider_blocks: List[Dict[str, Any]] = field(default_factory=list)  # Opaque provider content blocks (e.g. Claude thinking/redacted_thinking)
     usage: Dict[str, Any] = field(default_factory=dict)       # token usage info
     provider: str = ""                     # which provider handled this call
     model: str = ""                        # full model name used (e.g. gemini/gemini-2.0-flash), for report meta
@@ -124,6 +131,87 @@ def _split_provider_model(model: str) -> Tuple[str, str]:
         provider, remainder = normalized.split("/", 1)
         return provider.lower(), remainder.strip()
     return "openai", normalized
+
+
+def _object_to_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+    if hasattr(value, "dict"):
+        try:
+            dumped = value.dict()
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+    result: Dict[str, Any] = {}
+    for key in ("type", "text", "content", "thinking", "signature", "data"):
+        if hasattr(value, key):
+            result[key] = getattr(value, key)
+    return result
+
+
+def _provider_specific_fields_from(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    data = _object_to_dict(value)
+    return data if isinstance(data, dict) else {}
+
+
+def _extract_provider_blocks(choice: Any) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Return opaque provider blocks and joined text block content, if present."""
+    block_sources = []
+    message = getattr(choice, "message", None)
+    for owner in (message, choice):
+        if owner is None:
+            continue
+        for attr in ("content", "content_blocks", "provider_blocks", "thinking_blocks"):
+            value = getattr(owner, attr, None)
+            if isinstance(value, list):
+                block_sources.append(value)
+
+    blocks: List[Dict[str, Any]] = []
+    text_parts: List[str] = []
+    for source in block_sources:
+        for raw_block in source:
+            block = _object_to_dict(raw_block)
+            if not block:
+                continue
+            blocks.append(block)
+            block_type = str(block.get("type") or "")
+            text = block.get("text") or block.get("content")
+            if block_type == "text" and text:
+                text_parts.append(str(text))
+    return blocks, ("".join(text_parts).strip() or None)
+
+
+def _message_trace_matches_target(
+    message: Dict[str, Any],
+    target_model: Optional[str],
+    *,
+    target_provider: Optional[str] = None,
+) -> bool:
+    """Whether provider-specific fields in ``message`` can be sent to target."""
+    if not target_model:
+        return True
+    trace_provider = message.get(TRACE_PROVIDER_KEY)
+    trace_model = message.get(TRACE_MODEL_KEY)
+    if not trace_provider and not trace_model:
+        return True
+    return trace_model_matches(
+        trace_provider,
+        trace_model,
+        target_model,
+        current_provider=target_provider,
+    )
 
 
 def _model_matches(model: str, entries: List[str]) -> bool:
@@ -454,7 +542,7 @@ class LLMToolAdapter:
         timeout: Optional[float] = None,
     ) -> LLMResponse:
         """Call a specific litellm model with OpenAI-format messages and tools."""
-        openai_messages = self._convert_messages(messages)
+        openai_messages = self._convert_messages(messages, target_model=model)
 
         # Use short model name (without provider prefix) for thinking model lookup
         model_short = model.split("/")[-1] if "/" in model else model
@@ -536,10 +624,23 @@ class LLMToolAdapter:
         """Return the raw configured temperature before per-model normalization."""
         return float(self._config.llm_temperature)
 
-    def _convert_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _convert_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        target_model: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Convert internal message format to OpenAI-compatible format for litellm."""
         openai_messages: List[Dict[str, Any]] = []
+        target_provider = self._trace_provider_for_target(target_model)
         for msg in messages:
+            trace_matches_target = _message_trace_matches_target(
+                msg,
+                target_model,
+                target_provider=target_provider,
+            )
+            if not trace_matches_target:
+                continue
             if msg["role"] == "tool":
                 openai_messages.append({
                     "role": "tool",
@@ -557,13 +658,21 @@ class LLMToolAdapter:
                             "arguments": json.dumps(tc["arguments"]),
                         },
                     }
+                    provider_specific_fields = dict(tc.get("provider_specific_fields") or {})
                     sig = tc.get("thought_signature")
                     if sig is not None:
-                        tc_dict["provider_specific_fields"] = {"thought_signature": sig}
+                        provider_specific_fields.setdefault("thought_signature", sig)
+                    if provider_specific_fields:
+                        tc_dict["provider_specific_fields"] = provider_specific_fields
                     openai_tc.append(tc_dict)
+                content = (
+                    msg.get("provider_blocks")
+                    if msg.get("provider_blocks")
+                    else msg.get("content")
+                )
                 openai_msg: Dict[str, Any] = {
                     "role": "assistant",
-                    "content": msg.get("content"),
+                    "content": content,
                     "tool_calls": openai_tc,
                 }
                 if msg.get("reasoning_content") is not None:
@@ -576,35 +685,28 @@ class LLMToolAdapter:
                 })
         return openai_messages
 
+    def _trace_provider_for_target(self, target_model: Optional[str]) -> str:
+        if not target_model:
+            return ""
+        model_list = getattr(getattr(self, "_config", None), "llm_model_list", []) or []
+        return resolved_provider_namespace(target_model, model_list)
+
     def _parse_litellm_response(self, response: Any, model: str) -> LLMResponse:
         """Parse litellm OpenAI-compatible response into LLMResponse."""
         choice = response.choices[0]
         tool_calls: List[ToolCall] = []
+
+        provider_blocks, provider_text = _extract_provider_blocks(choice)
 
         # Handle MiniMax-specific content_blocks format
         # MiniMax-M2.7 may return content_blocks at choice level or inside message
         # Check both possible locations for content_blocks to ensure consistency
         # Concatenate ALL text blocks to avoid truncating multi-block responses
         text_content = choice.message.content
+        if isinstance(text_content, list):
+            text_content = provider_text
         if text_content is None:
-            content_blocks = None
-            if hasattr(choice, "content_blocks"):
-                content_blocks = choice.content_blocks
-            elif hasattr(choice.message, "content_blocks"):
-                content_blocks = choice.message.content_blocks
-
-            if content_blocks:
-                # MiniMax response format: content_blocks[].text
-                # Concatenate ALL text blocks to preserve complete response
-                text_parts = []
-                for block in content_blocks:
-                    if getattr(block, "type", None) == "text":
-                        text = getattr(block, "text", "") or ""
-                        if text:
-                            text_parts.append(text)
-                    elif hasattr(block, "content") and block.content:
-                        text_parts.append(block.content)
-                text_content = "".join(text_parts).strip()
+            text_content = provider_text
 
         # DeepSeek/Qwen thinking mode; not in standard OpenAI type, accessed via getattr
         reasoning_content = getattr(choice.message, "reasoning_content", None)
@@ -618,22 +720,24 @@ class LLMToolAdapter:
                     except json.JSONDecodeError:
                         args = {"raw": tc.function.arguments}
 
-                # Extract thought_signature: stored in provider_specific_fields (Gemini 3 via LiteLLM proxy)
-                psf = getattr(tc, "provider_specific_fields", None)
-                if psf is not None:
-                    sig = psf.get("thought_signature") if isinstance(psf, dict) else getattr(psf, "thought_signature", None)
-                else:
-                    func_psf = getattr(tc.function, "provider_specific_fields", None)
-                    if func_psf is not None:
-                        sig = func_psf.get("thought_signature") if isinstance(func_psf, dict) else getattr(func_psf, "thought_signature", None)
-                    else:
-                        sig = getattr(tc, "thought_signature", None)
+                provider_specific_fields = _provider_specific_fields_from(
+                    getattr(tc, "provider_specific_fields", None)
+                )
+                provider_specific_fields.update(
+                    _provider_specific_fields_from(
+                        getattr(tc.function, "provider_specific_fields", None)
+                    )
+                )
+                sig = provider_specific_fields.get("thought_signature")
+                if sig is None:
+                    sig = getattr(tc, "thought_signature", None)
 
                 tool_calls.append(ToolCall(
                     id=tc.id,
                     name=tc.function.name,
                     arguments=args,
                     thought_signature=sig,
+                    provider_specific_fields=provider_specific_fields,
                 ))
 
         usage: Dict[str, Any] = {}
@@ -644,11 +748,13 @@ class LLMToolAdapter:
                 "total_tokens": response.usage.total_tokens,
             }
 
-        provider_name = model.split("/")[0] if "/" in model else model
+        model_list = getattr(getattr(self, "_config", None), "llm_model_list", []) or []
+        provider_name = resolved_provider_namespace(model, model_list)
         return LLMResponse(
             content=text_content,
             tool_calls=tool_calls,
             reasoning_content=reasoning_content,
+            provider_blocks=provider_blocks,
             usage=usage,
             provider=provider_name,
             model=model,
